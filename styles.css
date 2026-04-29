@@ -1,0 +1,120 @@
+:root {
+  --bg-main: #f6f8fc;
+  --bg-panel: #ffffff;
+  --bg-soft: #eef2f8;
+  --text-main: #0f172a;
+  --text-soft: #475569;
+  --border-main: #d8e1ee;
+}
+
+body.dark {
+  --bg-main: #050914;
+  --bg-panel: #0e1626;
+  --bg-soft: #142034;
+  --text-main: #e2e8f0;
+  --text-soft: #8fa2c3;
+  --border-main: #22314a;
+}
+
+body {
+  background: radial-gradient(circle at 20% 0%, #0c1832 0%, #050914 42%, #040711 100%);
+  color: var(--text-main);
+}
+
+body:not(.dark) {
+  background: linear-gradient(180deg, #f5f7fb 0%, #eef2f8 100%);
+}
+
+.sidebar.collapsed {
+  width: 84px;
+}
+
+.sidebar.collapsed .sidebar-label {
+  display: none;
+}
+
+.sidebar.collapsed .workspace-btn {
+  justify-content: center;
+}
+
+.fin-grid {
+  --ag-font-family: "Sora", "Segoe UI", sans-serif;
+  --ag-header-height: 42px;
+  --ag-row-height: 38px;
+  --ag-border-color: var(--border-main);
+  --ag-row-border-color: var(--border-main);
+  --ag-header-background-color: var(--bg-soft);
+  --ag-odd-row-background-color: rgba(148, 163, 184, 0.06);
+  --ag-background-color: var(--bg-panel);
+  --ag-foreground-color: var(--text-main);
+  --ag-secondary-foreground-color: var(--text-soft);
+  --ag-selected-row-background-color: rgba(6, 182, 212, 0.18);
+  --ag-input-focus-border-color: #06b6d4;
+  --ag-range-selection-border-color: rgba(6, 182, 212, 0.65);
+  --ag-range-selection-background-color: rgba(6, 182, 212, 0.16);
+}
+
+.ag-theme-quartz.fin-grid .ag-header-cell-text {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+.ag-theme-quartz.fin-grid .ag-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-theme-quartz.fin-grid .ag-cell.ag-cell-focus {
+  border: 1px solid rgba(6, 182, 212, 0.7) !important;
+}
+
+.cell-money-positive {
+  color: #34d399;
+  font-weight: 700;
+}
+
+.cell-money-negative {
+  color: #fb7185;
+  font-weight: 700;
+}
+
+.price-flash-up {
+  animation: flash-up 1s ease;
+}
+
+.price-flash-down {
+  animation: flash-down 1s ease;
+}
+
+@keyframes flash-up {
+  0% {
+    background-color: rgba(16, 185, 129, 0.32);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes flash-down {
+  0% {
+    background-color: rgba(244, 63, 94, 0.32);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.5);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gestao Financeira</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["Sora", "Segoe UI", "sans-serif"],
+              mono: ["JetBrains Mono", "Consolas", "monospace"]
+            }
+          }
+        }
+      };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Sora:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./node_modules/ag-grid-community/styles/ag-grid.css" />
+    <link rel="stylesheet" href="./node_modules/ag-grid-community/styles/ag-theme-quartz.css" />
+
+    <style>
+      :root {
+        --gold: #eab308;
+        --green: #22c55e;
+        --red: #ef4444;
+        --line: #27272a;
+      }
+
+      body.theme-dark {
+        --bg-main: #090909;
+        --bg-panel: #0f0f0f;
+        --bg-soft: #111111;
+        --text-main: #ffffff;
+        --text-soft: #d4d4d4;
+      }
+
+      body.theme-light {
+        --bg-main: #f4f4f5;
+        --bg-panel: #ffffff;
+        --bg-soft: #f1f5f9;
+        --text-main: #0f172a;
+        --text-soft: #475569;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--bg-main);
+        color: var(--text-main);
+      }
+
+      body {
+        overflow: hidden;
+      }
+
+      body.theme-light,
+      body.theme-light main,
+      body.theme-light header,
+      body.theme-light aside {
+        background: var(--bg-main) !important;
+        color: var(--text-main) !important;
+      }
+
+      body.theme-light .dashboard-card {
+        border-color: #d4d4d8 !important;
+      }
+
+      body.theme-light .text-white,
+      body.theme-light .text-zinc-200,
+      body.theme-light .text-zinc-300,
+      body.theme-light .text-zinc-400,
+      body.theme-light .text-zinc-500 {
+        color: var(--text-main) !important;
+      }
+
+      body.theme-light .border-zinc-800,
+      body.theme-light .border-zinc-700 {
+        border-color: #d4d4d8 !important;
+      }
+
+      body.theme-light .bg-zinc-950,
+      body.theme-light .bg-zinc-900 {
+        background-color: #ffffff !important;
+      }
+
+      #sidebar {
+        min-width: 11rem;
+        overflow: hidden;
+      }
+
+      #sidebar .sidebar-content {
+        overflow-y: auto;
+      }
+
+      .sidebar-collapsed {
+        width: 52px !important;
+        min-width: 52px !important;
+      }
+
+      .sidebar-collapsed .sidebar-content,
+      .sidebar-collapsed .sidebar-footer,
+      .sidebar-collapsed .menu-link {
+        display: none;
+      }
+
+      .menu-item-active {
+        color: var(--gold) !important;
+        border-color: var(--gold) !important;
+      }
+
+      .money-positive {
+        color: var(--green) !important;
+      }
+
+      .money-negative {
+        color: var(--red) !important;
+      }
+
+      .dashboard-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--line);
+      }
+
+      .filter-btn-active {
+        border-color: var(--gold) !important;
+        color: var(--gold) !important;
+      }
+
+      /* AG Grid dark + gold override (forcado) */
+      .fin-grid.ag-theme-quartz,
+      .fin-grid.ag-theme-quartz-dark {
+        --ag-font-family: "Sora", "Segoe UI", sans-serif !important;
+        --ag-header-height: 40px !important;
+        --ag-row-height: 36px !important;
+        --ag-background-color: #09090b !important;
+        --ag-foreground-color: #ffffff !important;
+        --ag-data-color: #ffffff !important;
+        --ag-header-background-color: #09090b !important;
+        --ag-header-foreground-color: #eab308 !important;
+        --ag-border-color: #27272a !important;
+        --ag-row-border-color: #27272a !important;
+        --ag-secondary-border-color: #27272a !important;
+        --ag-row-hover-color: #18181b !important;
+        --ag-popup-background-color: #09090b !important;
+        --ag-menu-background-color: #09090b !important;
+        --ag-menu-text-color: #ffffff !important;
+        --ag-tooltip-background-color: #09090b !important;
+        --ag-input-background-color: #09090b !important;
+        --ag-input-text-color: #ffffff !important;
+        --ag-modal-overlay-background-color: rgba(9, 9, 11, 0.85) !important;
+      }
+
+      body.theme-dark .fin-grid.ag-theme-quartz-dark {
+        --ag-background-color: #09090b !important;
+        --ag-foreground-color: #ffffff !important;
+        --ag-data-color: #ffffff !important;
+        --ag-secondary-foreground-color: #d4d4d8 !important;
+        --ag-header-background-color: #09090b !important;
+        --ag-header-foreground-color: #eab308 !important;
+        --ag-row-hover-color: #18181b !important;
+        --ag-odd-row-background-color: #09090b !important;
+        --ag-selected-row-background-color: #18181b !important;
+        --ag-border-color: #27272a !important;
+        --ag-row-border-color: #27272a !important;
+        --ag-secondary-border-color: #27272a !important;
+        --ag-header-column-separator-color: #27272a !important;
+        --ag-input-focus-border-color: #eab308 !important;
+      }
+
+      body.theme-light .fin-grid.ag-theme-quartz {
+        --ag-background-color: #ffffff !important;
+        --ag-foreground-color: #0f172a !important;
+        --ag-data-color: #0f172a !important;
+        --ag-secondary-foreground-color: #475569 !important;
+        --ag-header-background-color: #f8fafc !important;
+        --ag-header-foreground-color: #92400e !important;
+        --ag-row-hover-color: #e2e8f0 !important;
+        --ag-odd-row-background-color: #ffffff !important;
+        --ag-selected-row-background-color: #e2e8f0 !important;
+        --ag-border-color: #d4d4d8 !important;
+        --ag-row-border-color: #d4d4d8 !important;
+        --ag-secondary-border-color: #d4d4d8 !important;
+        --ag-header-column-separator-color: #d4d4d8 !important;
+        --ag-input-focus-border-color: #92400e !important;
+        --ag-popup-background-color: #ffffff !important;
+        --ag-menu-background-color: #ffffff !important;
+        --ag-tooltip-background-color: #ffffff !important;
+        --ag-input-background-color: #ffffff !important;
+        --ag-input-text-color: #0f172a !important;
+      }
+
+      .fin-grid .ag-root-wrapper,
+      .fin-grid .ag-root-wrapper-body,
+      .fin-grid .ag-root,
+      .fin-grid .ag-body-viewport,
+      .fin-grid .ag-center-cols-viewport,
+      .fin-grid .ag-center-cols-container,
+      .fin-grid .ag-pinned-left-cols-container,
+      .fin-grid .ag-pinned-right-cols-container,
+      .fin-grid .ag-header,
+      .fin-grid .ag-header-viewport,
+      .fin-grid .ag-header-container {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+        border-color: #27272a !important;
+      }
+
+      .fin-grid .ag-root-wrapper {
+        border: 1px solid #27272a !important;
+      }
+
+      .fin-grid .ag-header {
+        border-bottom: 1px solid #eab308 !important;
+      }
+
+      .fin-grid .ag-header-cell,
+      .fin-grid .ag-header-group-cell {
+        background-color: #09090b !important;
+        border-color: #27272a !important;
+      }
+
+      .fin-grid .ag-header-cell-text,
+      .fin-grid .ag-header-group-text {
+        color: #eab308 !important;
+        font-weight: 600 !important;
+      }
+
+      .fin-grid .ag-row {
+        background-color: #09090b !important;
+        border-color: #27272a !important;
+      }
+
+      .fin-grid .ag-row:hover .ag-cell,
+      .fin-grid .ag-row.ag-row-hover .ag-cell {
+        background-color: #18181b !important;
+      }
+
+      .fin-grid .ag-cell {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+        border-color: #27272a !important;
+        border-left: 0 !important;
+        border-right: 0 !important;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .fin-grid .ag-cell-focus {
+        border: 1px solid #eab308 !important;
+      }
+
+      /* Dropdowns / menus / popups do AG Grid */
+      .fin-grid .ag-popup,
+      .fin-grid .ag-menu,
+      .fin-grid .ag-picker-field-wrapper,
+      .fin-grid .ag-rich-select-list,
+      .fin-grid .ag-rich-select-row,
+      .fin-grid .ag-list,
+      .fin-grid .ag-select-list,
+      .fin-grid .ag-filter,
+      .fin-grid .ag-tooltip {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+        border-color: #27272a !important;
+      }
+
+      .fin-grid .ag-menu-option:hover,
+      .fin-grid .ag-rich-select-row:hover,
+      .fin-grid .ag-list-item:hover {
+        background-color: #18181b !important;
+      }
+
+      .fin-grid .ag-menu-option-text,
+      .fin-grid .ag-rich-select-row-text,
+      .fin-grid .ag-filter-body,
+      .fin-grid .ag-picker-field-display {
+        color: #ffffff !important;
+      }
+
+      .fin-grid .ag-cell-edit-wrapper select,
+      .fin-grid .ag-cell-editor select,
+      .fin-grid select {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+        border: 1px solid #27272a !important;
+      }
+
+      .fin-grid select option {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+      }
+
+      body.theme-dark .ag-popup,
+      body.theme-dark .ag-menu,
+      body.theme-dark .ag-list,
+      body.theme-dark .ag-select-list,
+      body.theme-dark .ag-rich-select-list,
+      body.theme-dark .ag-picker-field-wrapper,
+      body.theme-dark .ag-filter,
+      body.theme-dark .ag-tooltip {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+        border-color: #27272a !important;
+      }
+
+      body.theme-dark .ag-menu-option:hover,
+      body.theme-dark .ag-list-item:hover,
+      body.theme-dark .ag-rich-select-row:hover {
+        background-color: #18181b !important;
+      }
+
+      body.theme-dark .ag-menu-option-text,
+      body.theme-dark .ag-rich-select-row-text,
+      body.theme-dark .ag-list-item,
+      body.theme-dark .ag-picker-field-display,
+      body.theme-dark .ag-filter-body {
+        color: #ffffff !important;
+      }
+
+      body.theme-dark .ag-cell-editor select,
+      body.theme-dark .ag-cell-edit-wrapper select,
+      body.theme-dark select {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+        border: 1px solid #27272a !important;
+      }
+
+      body.theme-dark select option {
+        background-color: #09090b !important;
+        color: #ffffff !important;
+      }
+
+      body.theme-light .fin-grid .ag-root-wrapper,
+      body.theme-light .fin-grid .ag-root-wrapper-body,
+      body.theme-light .fin-grid .ag-root,
+      body.theme-light .fin-grid .ag-body-viewport,
+      body.theme-light .fin-grid .ag-center-cols-viewport,
+      body.theme-light .fin-grid .ag-center-cols-container,
+      body.theme-light .fin-grid .ag-pinned-left-cols-container,
+      body.theme-light .fin-grid .ag-pinned-right-cols-container,
+      body.theme-light .fin-grid .ag-header,
+      body.theme-light .fin-grid .ag-header-viewport,
+      body.theme-light .fin-grid .ag-header-container,
+      body.theme-light .fin-grid .ag-cell,
+      body.theme-light .fin-grid .ag-row {
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        border-color: #d4d4d8 !important;
+      }
+
+      body.theme-light .fin-grid .ag-header {
+        border-bottom: 1px solid #92400e !important;
+      }
+
+      body.theme-light .fin-grid .ag-header-cell-text,
+      body.theme-light .fin-grid .ag-header-group-text {
+        color: #92400e !important;
+      }
+
+      body.theme-light .fin-grid .ag-row:hover .ag-cell,
+      body.theme-light .fin-grid .ag-row.ag-row-hover .ag-cell {
+        background-color: #e2e8f0 !important;
+      }
+
+      body.theme-light .fin-grid .ag-popup,
+      body.theme-light .fin-grid .ag-menu,
+      body.theme-light .fin-grid .ag-picker-field-wrapper,
+      body.theme-light .fin-grid .ag-rich-select-list,
+      body.theme-light .fin-grid .ag-rich-select-row,
+      body.theme-light .fin-grid .ag-list,
+      body.theme-light .fin-grid .ag-select-list,
+      body.theme-light .fin-grid .ag-filter,
+      body.theme-light .fin-grid .ag-tooltip,
+      body.theme-light .fin-grid .ag-cell-edit-wrapper select,
+      body.theme-light .fin-grid .ag-cell-editor select,
+      body.theme-light .fin-grid select,
+      body.theme-light .fin-grid select option {
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        border-color: #d4d4d8 !important;
+      }
+
+      body.theme-light .ag-popup,
+      body.theme-light .ag-menu,
+      body.theme-light .ag-list,
+      body.theme-light .ag-select-list,
+      body.theme-light .ag-rich-select-list,
+      body.theme-light .ag-picker-field-wrapper,
+      body.theme-light .ag-filter,
+      body.theme-light .ag-tooltip,
+      body.theme-light .ag-cell-editor select,
+      body.theme-light .ag-cell-edit-wrapper select,
+      body.theme-light select,
+      body.theme-light select option {
+        background-color: #ffffff !important;
+        color: #0f172a !important;
+        border-color: #d4d4d8 !important;
+      }
+
+      .flash-up {
+        animation: flash-up 1s ease;
+      }
+
+      .flash-down {
+        animation: flash-down 1s ease;
+      }
+
+      @keyframes flash-up {
+        0% {
+          background-color: rgba(34, 197, 94, 0.35);
+        }
+        100% {
+          background-color: transparent;
+        }
+      }
+
+      @keyframes flash-down {
+        0% {
+          background-color: rgba(239, 68, 68, 0.35);
+        }
+        100% {
+          background-color: transparent;
+        }
+      }
+
+      ::-webkit-scrollbar {
+        width: 9px;
+        height: 9px;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: #2f2f2f;
+        border-radius: 999px;
+      }
+    </style>
+  </head>
+
+  <body class="theme-dark dark bg-zinc-950 text-white">
+    <div class="flex h-screen w-screen overflow-hidden">
+      <aside
+        id="sidebar"
+        class="flex h-full w-44 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 transition-all duration-200"
+      >
+        <div class="flex h-12 items-center border-b border-zinc-800 px-3">
+          <button
+            id="sidebarToggle"
+            type="button"
+            class="w-full rounded border border-zinc-700 px-2 py-1 text-left text-xs text-zinc-300 hover:border-yellow-500 hover:text-yellow-500"
+          >
+            Menu
+          </button>
+        </div>
+
+        <div class="sidebar-content flex-1 space-y-2 px-2 py-3">
+          <button id="navBusiness" class="menu-link menu-item-active w-full rounded border border-yellow-500 px-2 py-2 text-left text-sm">
+            Empresarial
+          </button>
+          <button id="navPersonal" class="menu-link w-full rounded border border-zinc-700 px-2 py-2 text-left text-sm text-zinc-200">
+            Pessoal
+          </button>
+          <button id="navInvestments" class="menu-link w-full rounded border border-zinc-700 px-2 py-2 text-left text-sm text-zinc-200">
+            Investimentos
+          </button>
+        </div>
+
+        <div class="sidebar-footer border-t border-zinc-800 px-2 py-3">
+          <p class="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Saldo</p>
+          <p id="sidebarBalance" class="font-mono text-sm text-white">R$ 0,00</p>
+        </div>
+      </aside>
+
+      <div class="flex min-w-0 flex-1 flex-col">
+        <header class="flex h-12 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-950 px-4">
+          <input
+            id="globalSearch"
+            class="h-8 w-full max-w-xl rounded border border-zinc-700 bg-zinc-900 px-3 text-sm text-white outline-none focus:border-yellow-500"
+            placeholder="Buscar..."
+          />
+          <div class="rounded border border-zinc-700 px-3 py-1">
+            <span id="topbarBalance" class="font-mono text-xs text-white">R$ 0,00</span>
+          </div>
+          <button
+            id="themeToggle"
+            type="button"
+            class="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:border-yellow-500 hover:text-yellow-500"
+          >
+            Light
+          </button>
+        </header>
+
+        <main class="min-h-0 flex-1 overflow-auto p-4">
+          <div class="mx-auto flex min-h-full w-full max-w-[2600px] flex-col gap-4">
+            <section id="viewBusiness" class="flex min-h-0 flex-1 flex-col gap-4">
+              <div class="flex items-end justify-between gap-3">
+                <div>
+                  <p class="text-xs uppercase tracking-[0.2em] text-zinc-500">Empresarial</p>
+                  <h1 class="text-xl font-semibold">Fluxo de Caixa</h1>
+                </div>
+                <button id="addBusinessRow" class="rounded border border-yellow-500 px-3 py-1 text-sm text-yellow-500 hover:bg-yellow-500/10">
+                  Nova Linha
+                </button>
+              </div>
+
+              <div class="grid gap-3 md:grid-cols-3">
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Vendas do Dia</p>
+                  <p id="businessSalesCard" class="mt-1 font-mono text-xl money-positive">R$ 0,00</p>
+                </article>
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Despesas</p>
+                  <p id="businessExpensesCard" class="mt-1 font-mono text-xl money-negative">R$ 0,00</p>
+                </article>
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Saldo em Caixa</p>
+                  <p id="businessBalanceCard" class="mt-1 font-mono text-xl">R$ 0,00</p>
+                </article>
+              </div>
+
+              <div class="dashboard-card rounded p-3">
+                <div class="flex flex-wrap items-end gap-2">
+                  <div class="min-w-[220px] grow">
+                    <label for="businessCategoryInput" class="mb-1 block text-xs text-zinc-400">Nova categoria (Empresarial)</label>
+                    <input
+                      id="businessCategoryInput"
+                      type="text"
+                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-3 text-sm text-white outline-none focus:border-yellow-500"
+                      placeholder="Ex: Delivery, Impostos..."
+                    />
+                  </div>
+                  <button
+                    id="addBusinessCategoryButton"
+                    type="button"
+                    class="h-9 rounded border border-yellow-500 px-3 text-sm text-yellow-500 hover:bg-yellow-500/10"
+                  >
+                    Adicionar categoria
+                  </button>
+                </div>
+              </div>
+
+              <div class="min-h-0 flex-1 rounded border border-zinc-800 bg-zinc-950 p-2">
+                <div id="businessGrid" class="fin-grid ag-theme-quartz-dark h-[62vh] w-full"></div>
+              </div>
+            </section>
+
+            <section id="viewPersonal" class="hidden flex min-h-0 flex-1 flex-col gap-4">
+              <div class="flex items-end justify-between gap-3">
+                <div>
+                  <p class="text-xs uppercase tracking-[0.2em] text-zinc-500">Pessoal</p>
+                  <h1 class="text-xl font-semibold">Contas e Gastos</h1>
+                </div>
+                <button id="addPersonalRow" class="rounded border border-yellow-500 px-3 py-1 text-sm text-yellow-500 hover:bg-yellow-500/10">
+                  Nova Conta
+                </button>
+              </div>
+
+              <div class="grid gap-3 md:grid-cols-3">
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Receitas do Mes</p>
+                  <p id="personalIncomeCard" class="mt-1 font-mono text-xl money-positive">R$ 0,00</p>
+                </article>
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Despesas do Mes</p>
+                  <p id="personalExpenseCard" class="mt-1 font-mono text-xl money-negative">R$ 0,00</p>
+                </article>
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Contas a Pagar</p>
+                  <p id="personalOpenCard" class="mt-1 font-mono text-xl money-negative">R$ 0,00</p>
+                  <p id="personalOpenMeta" class="text-xs text-zinc-500">0 abertas / 0 vencidas</p>
+                </article>
+              </div>
+
+              <div class="dashboard-card rounded p-3">
+                <div class="flex flex-wrap items-end gap-2">
+                  <div class="min-w-[150px] grow">
+                    <label for="incomeAmountInput" class="mb-1 block text-xs text-zinc-400">Valor do salario/receita</label>
+                    <input
+                      id="incomeAmountInput"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-3 text-sm text-white outline-none focus:border-yellow-500"
+                      placeholder="0,00"
+                    />
+                  </div>
+                  <div class="min-w-[220px] grow">
+                    <label for="incomeDescriptionInput" class="mb-1 block text-xs text-zinc-400">Descricao</label>
+                    <input
+                      id="incomeDescriptionInput"
+                      type="text"
+                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-3 text-sm text-white outline-none focus:border-yellow-500"
+                      placeholder="Salario, renda extra..."
+                    />
+                  </div>
+                  <button
+                    id="addIncomeButton"
+                    type="button"
+                    class="h-9 rounded border border-yellow-500 px-3 text-sm text-yellow-500 hover:bg-yellow-500/10"
+                  >
+                    Lancar Salario/Receita
+                  </button>
+                </div>
+              </div>
+
+              <div class="dashboard-card rounded p-3">
+                <div class="flex flex-wrap items-end gap-2">
+                  <div class="min-w-[220px] grow">
+                    <label for="personalCategoryInput" class="mb-1 block text-xs text-zinc-400">Nova categoria (Pessoal)</label>
+                    <input
+                      id="personalCategoryInput"
+                      type="text"
+                      class="h-9 w-full rounded border border-zinc-700 bg-zinc-900 px-3 text-sm text-white outline-none focus:border-yellow-500"
+                      placeholder="Ex: Pets, Farmacia, Servicos..."
+                    />
+                  </div>
+                  <button
+                    id="addPersonalCategoryButton"
+                    type="button"
+                    class="h-9 rounded border border-yellow-500 px-3 text-sm text-yellow-500 hover:bg-yellow-500/10"
+                  >
+                    Adicionar categoria
+                  </button>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap gap-2">
+                <button id="filterPending" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">So pendentes</button>
+                <button id="filterOverdue" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">So vencidas</button>
+                <button id="filterMonth" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">Mes atual</button>
+                <button id="filterClear" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">Limpar filtros</button>
+              </div>
+
+              <div class="min-h-0 flex-1 rounded border border-zinc-800 bg-zinc-950 p-2">
+                <div id="personalGrid" class="fin-grid ag-theme-quartz-dark h-[58vh] w-full"></div>
+              </div>
+            </section>
+
+            <section id="viewInvestments" class="hidden flex min-h-0 flex-1 flex-col gap-4">
+              <div class="flex items-end justify-between gap-3">
+                <div>
+                  <p class="text-xs uppercase tracking-[0.2em] text-zinc-500">Investimentos</p>
+                  <h1 class="text-xl font-semibold">Patrimonio e Renda</h1>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-zinc-500">Ultima atualizacao</p>
+                  <p id="portfolioUpdatedAt" class="font-mono text-xs text-zinc-300">--</p>
+                </div>
+              </div>
+
+              <div class="grid gap-3 xl:grid-cols-3">
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Patrimonio Atual</p>
+                  <p id="investPatrimonyCard" class="mt-1 font-mono text-xl">R$ 0,00</p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <label for="goalInput" class="text-xs text-zinc-400">Meta</label>
+                    <input
+                      id="goalInput"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      class="h-8 min-w-[130px] rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
+                    />
+                    <button
+                      id="saveGoalButton"
+                      type="button"
+                      class="h-8 rounded border border-yellow-500 px-2 text-xs text-yellow-500 hover:bg-yellow-500/10"
+                    >
+                      Salvar Meta
+                    </button>
+                  </div>
+                  <div class="mt-3 h-2 rounded bg-zinc-800">
+                    <div id="goalProgressBar" class="h-2 rounded bg-yellow-500"></div>
+                  </div>
+                  <p id="goalProgressText" class="mt-1 text-xs text-zinc-400">0.0%</p>
+                </article>
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Total Investido</p>
+                  <p id="investedCard" class="mt-1 font-mono text-xl">R$ 0,00</p>
+                </article>
+                <article class="dashboard-card rounded p-4">
+                  <p class="text-xs text-zinc-400">Resultado</p>
+                  <p id="investResultCard" class="mt-1 font-mono text-xl">R$ 0,00</p>
+                </article>
+              </div>
+
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs text-zinc-500">Tabela unificada: Acoes, FIIs e CDB</p>
+                <button id="addPortfolioRow" class="rounded border border-yellow-500 px-3 py-1 text-sm text-yellow-500 hover:bg-yellow-500/10">
+                  Nova Posicao
+                </button>
+              </div>
+
+              <div class="min-h-0 flex-1 rounded border border-zinc-800 bg-zinc-950 p-2">
+                <div id="portfolioGrid" class="fin-grid ag-theme-quartz-dark h-[58vh] w-full"></div>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script src="./node_modules/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

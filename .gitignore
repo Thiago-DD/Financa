@@ -1,0 +1,11 @@
+node_modules/
+dist/
+Backup_Portatil_Financeiro/
+*.log
+*.tmp
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+Thumbs.db
+

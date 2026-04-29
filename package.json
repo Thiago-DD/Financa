@@ -1,0 +1,61 @@
+{
+  "name": "financeiro-spreadsheet-desktop",
+  "version": "1.0.0",
+  "description": "Sistema de gestao financeira local com Electron, SQLite e DataGrid estilo planilha.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "rebuild": "npm rebuild better-sqlite3",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
+    "build:win": "electron-builder --win nsis",
+    "build:github": "npm run build:win"
+  },
+  "dependencies": {
+    "ag-grid-community": "^35.2.1",
+    "better-sqlite3": "^12.9.0",
+    "yahoo-finance2": "^3.14.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "electron": "^40.4.1",
+    "electron-builder": "^26.8.1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "build": {
+    "appId": "com.financeiro.spreadsheet.desktop",
+    "productName": "Financeiro Spreadsheet Desktop",
+    "files": [
+      "main.js",
+      "preload.js",
+      "database.js",
+      "index.html",
+      "renderer.js",
+      "styles.css",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "FinanceiroPessoal-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
