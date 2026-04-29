@@ -33,7 +33,8 @@ npm run build:win
 ## Download para usuarios finais
 
 - Release mais recente: [Baixar no GitHub Releases](https://github.com/Thiago-DD/Financa/releases/latest)
-- Link direto esperado do instalador: `https://github.com/Thiago-DD/Financa/releases/latest/download/FinanceiroPessoal-Setup-1.0.0.exe`
+- Instalador na release: `FinanceiroPessoal-Setup-<versao>.exe`
+- Exemplo de link direto (quando o arquivo existir na release): `https://github.com/Thiago-DD/Financa/releases/latest/download/FinanceiroPessoal-Setup-1.0.0.exe`
 
 ## Estrutura principal
 
