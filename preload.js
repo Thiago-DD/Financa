@@ -5,12 +5,14 @@ contextBridge.exposeInMainWorld("financeAPI", {
   saveBusinessEntry: (row) => ipcRenderer.invoke("db:upsertBusinessEntry", row),
   deleteBusinessEntry: (id) => ipcRenderer.invoke("db:deleteBusinessEntry", id),
   addPersonalIncome: (row) => ipcRenderer.invoke("db:addPersonalIncome", row),
+  deletePersonalIncome: (id) => ipcRenderer.invoke("db:deletePersonalIncome", id),
   savePersonalExpense: (row) => ipcRenderer.invoke("db:upsertPersonalExpense", row),
   deletePersonalExpense: (id) => ipcRenderer.invoke("db:deletePersonalExpense", id),
   savePortfolioPosition: (row) => ipcRenderer.invoke("db:upsertPortfolioPosition", row),
   deletePortfolioPosition: (id) => ipcRenderer.invoke("db:deletePortfolioPosition", id),
   setUserSetting: (key, value) => ipcRenderer.invoke("db:setUserSetting", { key, value }),
   checkForUpdatesNow: () => ipcRenderer.invoke("app:checkForUpdatesNow"),
+  getBillAlerts: () => ipcRenderer.invoke("app:getBillAlerts"),
   openExternalLink: (url) => ipcRenderer.invoke("app:openExternalLink", url),
   onUpdateAvailable: (callback) => {
     const listener = (_event, payload) => callback(payload);
@@ -21,5 +23,10 @@ contextBridge.exposeInMainWorld("financeAPI", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("portfolio:updated", listener);
     return () => ipcRenderer.removeListener("portfolio:updated", listener);
+  },
+  onBillAlerts: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("app:billAlerts", listener);
+    return () => ipcRenderer.removeListener("app:billAlerts", listener);
   }
 });

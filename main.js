@@ -17,6 +17,7 @@ const {
   setUserSetting,
   upsertBusinessEntry,
   addPersonalIncome,
+  deletePersonalIncome,
   upsertPersonalExpense,
   upsertPortfolioPosition,
   deleteBusinessEntry,
@@ -41,6 +42,8 @@ let updateTimer = null;
 let backupsDirPath = "";
 let backupQueue = Promise.resolve();
 let lastUpdateTagNotified = null;
+let lastBillToastDay = "";
+const notifiedBillKeys = new Set();
 
 const yahooFinance = new YahooFinance();
 
@@ -71,6 +74,36 @@ function dayLabel(targetIso, todayIso, tomorrowIso) {
   if (targetIso === todayIso) return "hoje";
   if (targetIso === tomorrowIso) return "amanha";
   return `em ${targetIso.split("-").reverse().join("/")}`;
+}
+
+function collectUpcomingBills(windowDays = 2) {
+  if (!db) return { generatedAt: new Date().toISOString(), windowDays, bills: [] };
+
+  const now = new Date();
+  const todayIso = formatISODate(now);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const tomorrowIso = formatISODate(tomorrow);
+  const plusN = new Date(now);
+  plusN.setDate(now.getDate() + Number(windowDays || 2));
+  const endIso = formatISODate(plusN);
+
+  const rows = getPendingExpensesDueBetween(db, todayIso, endIso);
+  const bills = rows.map((bill) => ({
+    id: Number(bill.id),
+    due_date: String(bill.due_date || ""),
+    description: String(bill.description || "Conta"),
+    category: String(bill.category || ""),
+    amount: Number(bill.amount || 0),
+    status: String(bill.status || "Pendente"),
+    label: dayLabel(String(bill.due_date || ""), todayIso, tomorrowIso)
+  }));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: Number(windowDays || 2),
+    bills
+  };
 }
 
 function normalizeSemver(value) {
@@ -255,33 +288,38 @@ async function queueAutoBackupSafe(reason) {
 }
 
 function notifyUpcomingBills() {
-  if (!db || !Notification.isSupported()) return;
+  const payload = collectUpcomingBills(2);
 
-  const now = new Date();
-  const todayIso = formatISODate(now);
-  const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1);
-  const tomorrowIso = formatISODate(tomorrow);
-  const plus2 = new Date(now);
-  plus2.setDate(now.getDate() + 2);
-  const plus2Iso = formatISODate(plus2);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("app:billAlerts", payload);
+  }
 
-  const bills = getPendingExpensesDueBetween(db, todayIso, plus2Iso);
-  if (!bills.length) return;
+  if (!Notification.isSupported()) return payload;
 
-  for (const bill of bills) {
+  const todayIso = formatISODate(new Date());
+  if (lastBillToastDay !== todayIso) {
+    lastBillToastDay = todayIso;
+    notifiedBillKeys.clear();
+  }
+
+  for (const bill of payload.bills) {
+    const uniqueKey = `${todayIso}|${bill.id}|${bill.due_date}|${bill.amount}`;
+    if (notifiedBillKeys.has(uniqueKey)) continue;
+    notifiedBillKeys.add(uniqueKey);
+
     const value = Number(bill.amount || 0).toLocaleString("pt-BR", {
       style: "currency",
       currency: "BRL"
     });
-    const label = dayLabel(bill.due_date, todayIso, tomorrowIso);
 
     new Notification({
       title: "Lembrete Financeiro",
-      body: `${bill.description} vence ${label} (${value}).`,
+      body: `${bill.description} vence ${bill.label} (${value}).`,
       timeoutType: "default"
     }).show();
   }
+
+  return payload;
 }
 
 function createMainWindow() {
@@ -430,6 +468,7 @@ function registerIpcHandlers() {
     personalExpenses: getPersonalExpenses(db),
     portfolioPositions: getPortfolioPositions(db),
     userSettings: getUserSettings(db),
+    billAlerts: collectUpcomingBills(2),
     meta: {
       pollingIntervalMs: POLLING_INTERVAL_MS,
       portfolioGoal: getGoal(),
@@ -450,9 +489,16 @@ function registerIpcHandlers() {
     return saved;
   });
 
+  ipcMain.handle("db:deletePersonalIncome", async (_event, id) => {
+    const ok = deletePersonalIncome(db, id);
+    if (ok) await queueAutoBackupSafe("personal-income-delete");
+    return { ok };
+  });
+
   ipcMain.handle("db:upsertPersonalExpense", async (_event, row) => {
     const saved = upsertPersonalExpense(db, row);
     await queueAutoBackupSafe("personal-expense");
+    notifyUpcomingBills();
     return saved;
   });
 
@@ -471,6 +517,7 @@ function registerIpcHandlers() {
   ipcMain.handle("db:deletePersonalExpense", async (_event, id) => {
     const ok = deletePersonalExpense(db, id);
     if (ok) await queueAutoBackupSafe("personal-delete");
+    notifyUpcomingBills();
     return { ok };
   });
 
@@ -490,6 +537,8 @@ function registerIpcHandlers() {
     await checkForRepositoryUpdate();
     return { ok: true };
   });
+
+  ipcMain.handle("app:getBillAlerts", () => notifyUpcomingBills());
 
   ipcMain.handle("app:openExternalLink", async (_event, rawUrl) => {
     const parsed = String(rawUrl || "").trim();
@@ -513,6 +562,10 @@ function registerIpcHandlers() {
 
 app.whenReady()
   .then(() => {
+    if (process.platform === "win32") {
+      app.setAppUserModelId("com.thiagodd.financa.desktop");
+    }
+
     const dataDir = path.join(app.getPath("userData"), "FinanceSpreadsheetData");
     const dbPath = path.join(dataDir, "financeiro.db");
     backupsDirPath = path.join(dataDir, "backups");

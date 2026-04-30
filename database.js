@@ -14,6 +14,75 @@ function todayISO() {
   return nowISO().slice(0, 10);
 }
 
+function normalizeInstallmentTotal(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  const whole = Math.floor(numeric);
+  return Math.min(360, Math.max(1, whole));
+}
+
+function addMonthsIso(isoDate, monthOffset) {
+  const text = String(isoDate || "").trim();
+  const [yearText, monthText, dayText] = text.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return todayISO();
+  }
+
+  const base = new Date(Date.UTC(year, month - 1, 1));
+  base.setUTCMonth(base.getUTCMonth() + Number(monthOffset || 0));
+  const lastDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+  const safeDay = Math.min(Math.max(day, 1), lastDay);
+  return `${base.getUTCFullYear()}-${String(base.getUTCMonth() + 1).padStart(2, "0")}-${String(safeDay).padStart(2, "0")}`;
+}
+
+function ensurePersonalExpenseColumns(db) {
+  const columns = db.prepare("PRAGMA table_info(personal_expenses)").all();
+  const names = new Set(columns.map((col) => String(col.name)));
+
+  if (!names.has("installment_total")) {
+    db.exec("ALTER TABLE personal_expenses ADD COLUMN installment_total INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!names.has("installment_index")) {
+    db.exec("ALTER TABLE personal_expenses ADD COLUMN installment_index INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!names.has("installment_group_id")) {
+    db.exec("ALTER TABLE personal_expenses ADD COLUMN installment_group_id TEXT");
+  }
+
+  db.exec(`
+    UPDATE personal_expenses
+    SET
+      installment_total = COALESCE(NULLIF(installment_total, 0), 1),
+      installment_index = COALESCE(NULLIF(installment_index, 0), 1)
+  `);
+}
+
+function ensureBusinessEntryColumns(db) {
+  const columns = db.prepare("PRAGMA table_info(business_entries)").all();
+  const names = new Set(columns.map((col) => String(col.name)));
+
+  if (!names.has("installment_total")) {
+    db.exec("ALTER TABLE business_entries ADD COLUMN installment_total INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!names.has("installment_index")) {
+    db.exec("ALTER TABLE business_entries ADD COLUMN installment_index INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!names.has("installment_group_id")) {
+    db.exec("ALTER TABLE business_entries ADD COLUMN installment_group_id TEXT");
+  }
+
+  db.exec(`
+    UPDATE business_entries
+    SET
+      installment_total = COALESCE(NULLIF(installment_total, 0), 1),
+      installment_index = COALESCE(NULLIF(installment_index, 0), 1)
+  `);
+}
+
 function calculateCdbProRata(principal, percentCdi, cdiAnnualRate, applicationDate, refDate = new Date()) {
   const amount = Number(principal) || 0;
   const pct = (Number(percentCdi) || 0) / 100;
@@ -45,6 +114,9 @@ function initDatabase(dbFilePath) {
       entry_type TEXT NOT NULL CHECK (entry_type IN ('Entrada', 'Saida')),
       category TEXT NOT NULL,
       amount REAL NOT NULL,
+      installment_total INTEGER NOT NULL DEFAULT 1,
+      installment_index INTEGER NOT NULL DEFAULT 1,
+      installment_group_id TEXT,
       notes TEXT DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -75,6 +147,9 @@ function initDatabase(dbFilePath) {
       amount REAL NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('Pendente', 'Pago')),
       paid_date TEXT,
+      installment_total INTEGER NOT NULL DEFAULT 1,
+      installment_index INTEGER NOT NULL DEFAULT 1,
+      installment_group_id TEXT,
       notes TEXT DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -116,6 +191,9 @@ function initDatabase(dbFilePath) {
     WHERE entry_type <> 'Entrada' AND entry_type <> 'Saida'
   `).run();
 
+  ensureBusinessEntryColumns(db);
+  ensurePersonalExpenseColumns(db);
+
   seedDatabase(db);
   return db;
 }
@@ -137,7 +215,9 @@ function seedUserSettings(db) {
 
 function getBusinessEntries(db) {
   return db.prepare(`
-    SELECT id, entry_date, description, entry_type, category, amount, notes
+    SELECT
+      id, entry_date, description, entry_type, category, amount,
+      installment_total, installment_index, installment_group_id, notes
     FROM business_entries
     ORDER BY entry_date DESC, id DESC
   `).all();
@@ -186,7 +266,9 @@ function setUserSetting(db, key, value) {
 
 function getPersonalExpenses(db) {
   return db.prepare(`
-    SELECT id, due_date, description, category, amount, status, paid_date, notes
+    SELECT
+      id, due_date, description, category, amount, status, paid_date,
+      installment_total, installment_index, installment_group_id, notes
     FROM personal_expenses
     ORDER BY due_date ASC, id DESC
   `).all();
@@ -223,6 +305,12 @@ function getCdbTargets(db) {
 
 function upsertBusinessEntry(db, row) {
   const stamp = nowISO();
+  const installmentTotal = normalizeInstallmentTotal(row.installment_total);
+  const installmentIndex = Math.min(
+    installmentTotal,
+    Math.max(1, Number.isFinite(Number(row.installment_index)) ? Math.floor(Number(row.installment_index)) : 1)
+  );
+
   const payload = {
     id: row.id ? Number(row.id) : null,
     entry_date: row.entry_date,
@@ -230,10 +318,104 @@ function upsertBusinessEntry(db, row) {
     entry_type: String(row.entry_type || "").toLowerCase().startsWith("s") ? "Saida" : "Entrada",
     category: row.category || "Outros",
     amount: Number(row.amount) || 0,
+    installment_total: installmentTotal,
+    installment_index: installmentIndex,
+    installment_group_id: row.installment_group_id || null,
     notes: row.notes || ""
   };
 
   if (payload.id) {
+    const current = db.prepare(`
+      SELECT
+        id, entry_date, description, entry_type, category, amount,
+        installment_total, installment_index, installment_group_id, notes
+      FROM business_entries
+      WHERE id = ?
+    `).get(payload.id);
+
+    if (!current) return null;
+
+    const canExpandInstallments =
+      payload.installment_total > 1 &&
+      Number(current.installment_total || 1) <= 1 &&
+      Number(current.installment_index || 1) <= 1;
+
+    if (canExpandInstallments) {
+      const groupId = payload.installment_group_id || current.installment_group_id || `inst-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+      const generatedIds = [];
+
+      const updateAndInsert = db.transaction(() => {
+        db.prepare(`
+          UPDATE business_entries
+          SET
+            entry_date = @entry_date,
+            description = @description,
+            entry_type = @entry_type,
+            category = @category,
+            amount = @amount,
+            installment_total = @installment_total,
+            installment_index = 1,
+            installment_group_id = @installment_group_id,
+            notes = @notes,
+            updated_at = @updated_at
+          WHERE id = @id
+        `).run({
+          ...payload,
+          installment_index: 1,
+          installment_group_id: groupId,
+          updated_at: stamp
+        });
+
+        const insertStmt = db.prepare(`
+          INSERT INTO business_entries (
+            entry_date, description, entry_type, category, amount,
+            installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+          ) VALUES (
+            @entry_date, @description, @entry_type, @category, @amount,
+            @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+          )
+        `);
+
+        for (let index = 2; index <= payload.installment_total; index += 1) {
+          const installmentDate = addMonthsIso(payload.entry_date, index - 1);
+          const inserted = insertStmt.run({
+            entry_date: installmentDate,
+            description: payload.description,
+            entry_type: payload.entry_type,
+            category: payload.category,
+            amount: payload.amount,
+            installment_total: payload.installment_total,
+            installment_index: index,
+            installment_group_id: groupId,
+            notes: payload.notes,
+            created_at: stamp,
+            updated_at: stamp
+          });
+          generatedIds.push(Number(inserted.lastInsertRowid));
+        }
+      });
+
+      updateAndInsert();
+
+      const allIds = [Number(payload.id), ...generatedIds];
+      const rows = db.prepare(`
+        SELECT
+          id, entry_date, description, entry_type, category, amount,
+          installment_total, installment_index, installment_group_id, notes
+        FROM business_entries
+        WHERE id IN (${allIds.map(() => "?").join(",")})
+        ORDER BY entry_date ASC, installment_index ASC, id ASC
+      `).all(...allIds);
+
+      const primary = rows.find((item) => Number(item.id) === Number(payload.id)) || rows[0] || null;
+      if (!primary) return null;
+
+      return {
+        ...primary,
+        generated_rows: rows
+      };
+    }
+
     db.prepare(`
       UPDATE business_entries
       SET
@@ -242,23 +424,88 @@ function upsertBusinessEntry(db, row) {
         entry_type = @entry_type,
         category = @category,
         amount = @amount,
+        installment_total = @installment_total,
+        installment_index = @installment_index,
+        installment_group_id = @installment_group_id,
         notes = @notes,
         updated_at = @updated_at
       WHERE id = @id
     `).run({ ...payload, updated_at: stamp });
   } else {
+    if (payload.installment_total > 1) {
+      const groupId = payload.installment_group_id || `inst-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+      const insertStmt = db.prepare(`
+        INSERT INTO business_entries (
+          entry_date, description, entry_type, category, amount,
+          installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+        ) VALUES (
+          @entry_date, @description, @entry_type, @category, @amount,
+          @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+        )
+      `);
+
+      const generatedIds = [];
+      const insertMany = db.transaction(() => {
+        for (let index = 1; index <= payload.installment_total; index += 1) {
+          const installmentDate = addMonthsIso(payload.entry_date, index - 1);
+          const inserted = insertStmt.run({
+            entry_date: installmentDate,
+            description: payload.description,
+            entry_type: payload.entry_type,
+            category: payload.category,
+            amount: payload.amount,
+            installment_total: payload.installment_total,
+            installment_index: index,
+            installment_group_id: groupId,
+            notes: payload.notes,
+            created_at: stamp,
+            updated_at: stamp
+          });
+          generatedIds.push(Number(inserted.lastInsertRowid));
+        }
+      });
+
+      insertMany();
+
+      const rows = db.prepare(`
+        SELECT
+          id, entry_date, description, entry_type, category, amount,
+          installment_total, installment_index, installment_group_id, notes
+        FROM business_entries
+        WHERE id IN (${generatedIds.map(() => "?").join(",")})
+        ORDER BY entry_date ASC, installment_index ASC, id ASC
+      `).all(...generatedIds);
+
+      const primary = rows[0] || null;
+      if (!primary) return null;
+
+      return {
+        ...primary,
+        generated_rows: rows
+      };
+    }
+
     const inserted = db.prepare(`
       INSERT INTO business_entries (
-        entry_date, description, entry_type, category, amount, notes, created_at, updated_at
+        entry_date, description, entry_type, category, amount,
+        installment_total, installment_index, installment_group_id, notes, created_at, updated_at
       ) VALUES (
-        @entry_date, @description, @entry_type, @category, @amount, @notes, @created_at, @updated_at
+        @entry_date, @description, @entry_type, @category, @amount,
+        @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
       )
-    `).run({ ...payload, created_at: stamp, updated_at: stamp });
+    `).run({
+      ...payload,
+      installment_group_id: payload.installment_group_id || null,
+      created_at: stamp,
+      updated_at: stamp
+    });
     payload.id = inserted.lastInsertRowid;
   }
 
   return db.prepare(`
-    SELECT id, entry_date, description, entry_type, category, amount, notes
+    SELECT
+      id, entry_date, description, entry_type, category, amount,
+      installment_total, installment_index, installment_group_id, notes
     FROM business_entries
     WHERE id = ?
   `).get(payload.id);
@@ -308,6 +555,11 @@ function upsertPersonalExpense(db, row) {
   const stamp = nowISO();
   const status = row.status === "Pago" || row.status === "PAGO" ? "Pago" : "Pendente";
   const dueDate = row.due_date || todayISO();
+  const installmentTotal = normalizeInstallmentTotal(row.installment_total);
+  const installmentIndex = Math.min(
+    installmentTotal,
+    Math.max(1, Number.isFinite(Number(row.installment_index)) ? Math.floor(Number(row.installment_index)) : 1)
+  );
 
   const payload = {
     id: row.id ? Number(row.id) : null,
@@ -317,10 +569,106 @@ function upsertPersonalExpense(db, row) {
     amount: Number(row.amount) || 0,
     status,
     paid_date: status === "Pago" ? (row.paid_date || dueDate) : null,
+    installment_total: installmentTotal,
+    installment_index: installmentIndex,
+    installment_group_id: row.installment_group_id || null,
     notes: row.notes || ""
   };
 
   if (payload.id) {
+    const current = db.prepare(`
+      SELECT
+        id, due_date, description, category, amount, status, paid_date,
+        installment_total, installment_index, installment_group_id, notes
+      FROM personal_expenses
+      WHERE id = ?
+    `).get(payload.id);
+
+    if (!current) return null;
+
+    const canExpandInstallments =
+      payload.installment_total > 1 &&
+      Number(current.installment_total || 1) <= 1 &&
+      Number(current.installment_index || 1) <= 1;
+
+    if (canExpandInstallments) {
+      const groupId = payload.installment_group_id || current.installment_group_id || `inst-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+      const generatedIds = [];
+
+      const updateAndInsert = db.transaction(() => {
+        db.prepare(`
+          UPDATE personal_expenses
+          SET
+            due_date = @due_date,
+            description = @description,
+            category = @category,
+            amount = @amount,
+            status = @status,
+            paid_date = @paid_date,
+            installment_total = @installment_total,
+            installment_index = 1,
+            installment_group_id = @installment_group_id,
+            notes = @notes,
+            updated_at = @updated_at
+          WHERE id = @id
+        `).run({
+          ...payload,
+          installment_index: 1,
+          installment_group_id: groupId,
+          updated_at: stamp
+        });
+
+        const insertStmt = db.prepare(`
+          INSERT INTO personal_expenses (
+            due_date, description, category, amount, status, paid_date,
+            installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+          ) VALUES (
+            @due_date, @description, @category, @amount, @status, @paid_date,
+            @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+          )
+        `);
+
+        for (let index = 2; index <= payload.installment_total; index += 1) {
+          const installmentDueDate = addMonthsIso(payload.due_date, index - 1);
+          const inserted = insertStmt.run({
+            due_date: installmentDueDate,
+            description: payload.description,
+            category: payload.category,
+            amount: payload.amount,
+            status: "Pendente",
+            paid_date: null,
+            installment_total: payload.installment_total,
+            installment_index: index,
+            installment_group_id: groupId,
+            notes: payload.notes,
+            created_at: stamp,
+            updated_at: stamp
+          });
+          generatedIds.push(Number(inserted.lastInsertRowid));
+        }
+      });
+
+      updateAndInsert();
+
+      const allIds = [Number(payload.id), ...generatedIds];
+      const rows = db.prepare(`
+        SELECT
+          id, due_date, description, category, amount, status, paid_date,
+          installment_total, installment_index, installment_group_id, notes
+        FROM personal_expenses
+        WHERE id IN (${allIds.map(() => "?").join(",")})
+        ORDER BY due_date ASC, installment_index ASC, id ASC
+      `).all(...allIds);
+
+      const primary = rows.find((item) => Number(item.id) === Number(payload.id)) || rows[0] || null;
+      if (!primary) return null;
+
+      return {
+        ...primary,
+        generated_rows: rows
+      };
+    }
+
     db.prepare(`
       UPDATE personal_expenses
       SET
@@ -330,23 +678,96 @@ function upsertPersonalExpense(db, row) {
         amount = @amount,
         status = @status,
         paid_date = @paid_date,
+        installment_total = @installment_total,
+        installment_index = @installment_index,
+        installment_group_id = @installment_group_id,
         notes = @notes,
         updated_at = @updated_at
       WHERE id = @id
     `).run({ ...payload, updated_at: stamp });
   } else {
+    if (payload.installment_total > 1) {
+      const groupId = payload.installment_group_id || `inst-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+      const insertStmt = db.prepare(`
+        INSERT INTO personal_expenses (
+          due_date, description, category, amount, status, paid_date,
+          installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+        ) VALUES (
+          @due_date, @description, @category, @amount, @status, @paid_date,
+          @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+        )
+      `);
+
+      const generatedIds = [];
+      const insertMany = db.transaction(() => {
+        for (let index = 1; index <= payload.installment_total; index += 1) {
+          const installmentDueDate = addMonthsIso(payload.due_date, index - 1);
+          const installmentStatus = index === 1 ? payload.status : "Pendente";
+          const installmentPaidDate = installmentStatus === "Pago"
+            ? (index === 1 ? payload.paid_date : installmentDueDate)
+            : null;
+
+          const inserted = insertStmt.run({
+            due_date: installmentDueDate,
+            description: payload.description,
+            category: payload.category,
+            amount: payload.amount,
+            status: installmentStatus,
+            paid_date: installmentPaidDate,
+            installment_total: payload.installment_total,
+            installment_index: index,
+            installment_group_id: groupId,
+            notes: payload.notes,
+            created_at: stamp,
+            updated_at: stamp
+          });
+          generatedIds.push(Number(inserted.lastInsertRowid));
+        }
+      });
+
+      insertMany();
+
+      const rows = db.prepare(`
+        SELECT
+          id, due_date, description, category, amount, status, paid_date,
+          installment_total, installment_index, installment_group_id, notes
+        FROM personal_expenses
+        WHERE id IN (${generatedIds.map(() => "?").join(",")})
+        ORDER BY due_date ASC, installment_index ASC, id ASC
+      `).all(...generatedIds);
+
+      const primary = rows[0] || null;
+      if (!primary) {
+        return null;
+      }
+
+      return {
+        ...primary,
+        generated_rows: rows
+      };
+    }
+
     const inserted = db.prepare(`
       INSERT INTO personal_expenses (
-        due_date, description, category, amount, status, paid_date, notes, created_at, updated_at
+        due_date, description, category, amount, status, paid_date,
+        installment_total, installment_index, installment_group_id, notes, created_at, updated_at
       ) VALUES (
-        @due_date, @description, @category, @amount, @status, @paid_date, @notes, @created_at, @updated_at
+        @due_date, @description, @category, @amount, @status, @paid_date,
+        @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
       )
-    `).run({ ...payload, created_at: stamp, updated_at: stamp });
+    `).run({
+      ...payload,
+      installment_group_id: payload.installment_group_id || null,
+      created_at: stamp,
+      updated_at: stamp
+    });
     payload.id = inserted.lastInsertRowid;
   }
 
   return db.prepare(`
-    SELECT id, due_date, description, category, amount, status, paid_date, notes
+    SELECT
+      id, due_date, description, category, amount, status, paid_date,
+      installment_total, installment_index, installment_group_id, notes
     FROM personal_expenses
     WHERE id = ?
   `).get(payload.id);
@@ -434,6 +855,13 @@ function deleteBusinessEntry(db, id) {
   return result.changes > 0;
 }
 
+function deletePersonalIncome(db, id) {
+  const parsed = Number(id);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  const result = db.prepare("DELETE FROM personal_incomes WHERE id = ?").run(parsed);
+  return result.changes > 0;
+}
+
 function deletePersonalExpense(db, id) {
   const parsed = Number(id);
   if (!Number.isFinite(parsed) || parsed <= 0) return false;
@@ -492,6 +920,7 @@ module.exports = {
   setUserSetting,
   upsertBusinessEntry,
   addPersonalIncome,
+  deletePersonalIncome,
   upsertPersonalExpense,
   upsertPortfolioPosition,
   deleteBusinessEntry,

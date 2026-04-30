@@ -4,6 +4,9 @@ const NUMBER_BR = new Intl.NumberFormat("pt-BR");
 const VIEW_KEYS = ["business", "personal", "investments"];
 const DEFAULT_BUSINESS_CATEGORIES = ["Sangria", "Fornecedor", "Venda Balcao"];
 const DEFAULT_PERSONAL_CATEGORIES = ["Moradia", "Alimentacao", "Transporte", "Lazer"];
+const DELETE_SELECTOR_COL_ID = "__delete_selector__";
+const PIE_COLORS_INCOME = ["#22c55e", "#16a34a", "#4ade80", "#65a30d", "#10b981", "#84cc16"];
+const PIE_COLORS_EXPENSE = ["#ef4444", "#dc2626", "#f97316", "#fb7185", "#b91c1c", "#ea580c"];
 
 const appState = {
   activeView: "business",
@@ -19,7 +22,16 @@ const appState = {
   personalFilter: "none",
   businessCategories: [...DEFAULT_BUSINESS_CATEGORIES],
   personalCategories: [...DEFAULT_PERSONAL_CATEGORIES],
-  pendingUpdate: null
+  businessDeleteMode: false,
+  personalDeleteMode: false,
+  investmentDeleteMode: false,
+  pendingUpdate: null,
+  riskBannerDismissed: false,
+  notifications: [],
+  notificationsOpen: false,
+  unreadNotifications: 0,
+  lastBillNotificationKey: "",
+  lastUpdateNotificationKey: ""
 };
 
 const gridState = {
@@ -38,12 +50,176 @@ function byId(id) {
   return document.getElementById(id);
 }
 
+class CategorySelectEditor {
+  init(params) {
+    this.params = params;
+    this.eSelect = document.createElement("select");
+    this.eSelect.className = "ag-input-field-input ag-text-field-input";
+    this.eSelect.style.width = "100%";
+    this.eSelect.style.height = "100%";
+    this.eSelect.style.border = "0";
+    this.eSelect.style.outline = "none";
+    this.eSelect.style.backgroundColor = "transparent";
+    this.eSelect.style.color = "inherit";
+    this.eSelect.style.padding = "0 4px";
+
+    const values = Array.isArray(params?.values)
+      ? params.values
+      : Array.isArray(params?.colDef?.cellEditorParams?.values)
+        ? params.colDef.cellEditorParams.values
+        : [];
+    const safeValues = values.map((value) => String(value));
+    const currentValue = String(params?.value ?? "");
+
+    if (currentValue && !safeValues.includes(currentValue)) {
+      safeValues.unshift(currentValue);
+    }
+
+    for (const value of safeValues) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      this.eSelect.appendChild(option);
+    }
+
+    this.eSelect.value = currentValue;
+    if (params?.center) {
+      this.eSelect.style.textAlign = "center";
+      this.eSelect.style.textAlignLast = "center";
+    }
+
+    this.onChange = () => {
+      this.params?.stopEditing?.();
+    };
+    this.onKeyDown = (event) => {
+      if (event.key === "Enter" || event.key === "Tab") {
+        this.params?.stopEditing?.();
+      }
+      if (event.key === "Escape") {
+        this.params?.stopEditing?.(true);
+      }
+    };
+
+    this.eSelect.addEventListener("change", this.onChange);
+    this.eSelect.addEventListener("keydown", this.onKeyDown);
+  }
+
+  getGui() {
+    return this.eSelect;
+  }
+
+  afterGuiAttached() {
+    if (!this.eSelect) return;
+    this.eSelect.focus();
+
+    try {
+      if (typeof this.eSelect.showPicker === "function") {
+        this.eSelect.showPicker();
+      } else {
+        this.eSelect.click();
+      }
+    } catch (_error) {
+      try {
+        this.eSelect.click();
+      } catch (_ignored) {
+        // noop
+      }
+    }
+  }
+
+  getValue() {
+    return this.eSelect?.value ?? "";
+  }
+
+  destroy() {
+    if (this.eSelect && this.onChange) {
+      this.eSelect.removeEventListener("change", this.onChange);
+    }
+    if (this.eSelect && this.onKeyDown) {
+      this.eSelect.removeEventListener("keydown", this.onKeyDown);
+    }
+  }
+}
+
 function toNumber(value) {
   if (typeof value === "number") return value;
   if (typeof value !== "string") return Number(value) || 0;
   const normalized = value.replace(/\./g, "").replace(",", ".");
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toInstallmentTotal(value) {
+  const raw = String(value ?? "").trim();
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    const whole = Math.floor(numeric);
+    return Math.min(360, Math.max(1, whole));
+  }
+
+  const digits = raw.match(/\d+/);
+  if (digits) {
+    const parsed = Number(digits[0]);
+    if (Number.isFinite(parsed)) {
+      const whole = Math.floor(parsed);
+      return Math.min(360, Math.max(1, whole));
+    }
+  }
+
+  return 1;
+}
+
+function isValidIsoDate(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const [year, month, day] = text.split("-").map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() + 1 === month &&
+    probe.getUTCDate() === day
+  );
+}
+
+function lastDayOfMonth(year, month) {
+  return new Date(year, month, 0).getDate();
+}
+
+function normalizeIsoDate(value, fallbackIso = todayISO(), baseIso = fallbackIso) {
+  const fallback = isValidIsoDate(fallbackIso) ? fallbackIso : todayISO();
+  const base = isValidIsoDate(baseIso) ? baseIso : fallback;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  if (isValidIsoDate(text)) return text;
+
+  const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (br) {
+    const day = Number(br[1]);
+    const month = Number(br[2]);
+    const year = Number(br[3]);
+    const iso = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    return isValidIsoDate(iso) ? iso : fallback;
+  }
+
+  const dayOnly = text.match(/^(\d{1,2})$/);
+  if (dayOnly) {
+    const day = Number(dayOnly[1]);
+    const [yearText, monthText] = base.split("-");
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const clampedDay = Math.min(Math.max(day, 1), lastDayOfMonth(year, month));
+    return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(clampedDay).padStart(2, "0")}`;
+  }
+
+  return fallback;
 }
 
 function todayISO() {
@@ -56,6 +232,20 @@ function todayISO() {
 
 function currentMonthPrefix() {
   return todayISO().slice(0, 7);
+}
+
+function parseMonthFromInput(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const monthMatch = text.match(/^(\d{4}-\d{2})$/);
+  if (monthMatch) return monthMatch[1];
+  const dateMatch = text.match(/^(\d{4}-\d{2})-\d{2}$/);
+  return dateMatch ? dateMatch[1] : "";
+}
+
+function monthToDateInputValue(monthValue) {
+  const month = extractMonth(monthValue);
+  return month ? `${month}-01` : "";
 }
 
 function sanitizeCategory(value) {
@@ -173,29 +363,51 @@ function uiToDbAssetType(value) {
 }
 
 function normalizeBusinessRow(row) {
+  const entryDate = normalizeIsoDate(row.entry_date, todayISO(), row.entry_date || todayISO());
+  const installmentTotal = toInstallmentTotal(row.installment_total);
+  const installmentIndex = Math.min(
+    installmentTotal,
+    Math.max(1, Number.isFinite(Number(row.installment_index)) ? Math.floor(Number(row.installment_index)) : 1)
+  );
   return ensureTempId({
     id: row.id ?? null,
     __tmpId: row.__tmpId || null,
-    entry_date: row.entry_date || todayISO(),
+    entry_date: entryDate,
     description: row.description || "",
     entry_type: uiToDbBusinessType(row.entry_type),
     category: row.category || "Venda Balcao",
     amount: toNumber(row.amount),
+    installment_total: installmentTotal,
+    installment_index: installmentIndex,
+    installment_group_id: row.installment_group_id || null,
     notes: row.notes || ""
   });
 }
 
 function normalizePersonalExpenseRow(row) {
   const status = uiToDbStatus(row.status);
+  const dueDate = normalizeIsoDate(row.due_date, todayISO(), row.due_date || todayISO());
+  const installmentTotal = toInstallmentTotal(row.installment_total);
+  const installmentIndex = Math.min(
+    installmentTotal,
+    Math.max(1, Number.isFinite(Number(row.installment_index)) ? Math.floor(Number(row.installment_index)) : 1)
+  );
+  const paidDate = status === "Pago"
+    ? normalizeIsoDate(row.paid_date || dueDate, dueDate, dueDate)
+    : null;
+
   return ensureTempId({
     id: row.id ?? null,
     __tmpId: row.__tmpId || null,
-    due_date: row.due_date || todayISO(),
+    due_date: dueDate,
     description: row.description || "",
     category: row.category || "Moradia",
     amount: toNumber(row.amount),
     status,
-    paid_date: status === "Pago" ? (row.paid_date || row.due_date || todayISO()) : null,
+    paid_date: paidDate,
+    installment_total: installmentTotal,
+    installment_index: installmentIndex,
+    installment_group_id: row.installment_group_id || null,
     notes: row.notes || ""
   });
 }
@@ -203,7 +415,7 @@ function normalizePersonalExpenseRow(row) {
 function normalizePersonalIncomeRow(row) {
   return {
     id: row.id ?? null,
-    income_date: row.income_date || todayISO(),
+    income_date: normalizeIsoDate(row.income_date, todayISO(), row.income_date || todayISO()),
     description: row.description || "",
     source: row.source || "SALARIO",
     amount: toNumber(row.amount),
@@ -213,6 +425,10 @@ function normalizePersonalIncomeRow(row) {
 
 function normalizePortfolioRow(row) {
   const type = uiToDbAssetType(row.asset_type);
+  const applicationDate = type === "CDB"
+    ? normalizeIsoDate(row.application_date, todayISO(), row.application_date || todayISO())
+    : null;
+
   const clean = ensureTempId({
     id: row.id ?? null,
     __tmpId: row.__tmpId || null,
@@ -224,7 +440,7 @@ function normalizePortfolioRow(row) {
     application_amount: type === "CDB" ? toNumber(row.application_amount) : 0,
     rate_percent: type === "CDB" ? toNumber(row.rate_percent) : 0,
     cdi_annual_rate: type === "CDB" ? toNumber(row.cdi_annual_rate || 13.65) : 13.65,
-    application_date: type === "CDB" ? (row.application_date || todayISO()) : null,
+    application_date: applicationDate,
     current_unit_price: type === "CDB" ? 0 : toNumber(row.current_unit_price),
     current_value: toNumber(row.current_value),
     last_dividend: type === "CDB" ? 0 : toNumber(row.last_dividend),
@@ -236,7 +452,10 @@ function normalizePortfolioRow(row) {
 }
 
 function indexByIdentity(list, row) {
-  if (row.id) return list.findIndex((item) => Number(item.id) === Number(row.id));
+  if (row.id) {
+    const idxById = list.findIndex((item) => Number(item.id) === Number(row.id));
+    if (idxById >= 0) return idxById;
+  }
   if (row.__tmpId) return list.findIndex((item) => item.__tmpId && item.__tmpId === row.__tmpId);
   return -1;
 }
@@ -258,6 +477,17 @@ function initRefs() {
   refs.updateText = byId("updateText");
   refs.openUpdateButton = byId("openUpdateButton");
   refs.dismissUpdateButton = byId("dismissUpdateButton");
+  refs.notificationToggle = byId("notificationToggle");
+  refs.notificationCount = byId("notificationCount");
+  refs.notificationPanel = byId("notificationPanel");
+  refs.notificationMeta = byId("notificationMeta");
+  refs.notificationList = byId("notificationList");
+  refs.notificationMarkRead = byId("notificationMarkRead");
+  refs.riskBanner = byId("riskBanner");
+  refs.riskBannerTitle = byId("riskBannerTitle");
+  refs.riskBannerMeta = byId("riskBannerMeta");
+  refs.riskBannerList = byId("riskBannerList");
+  refs.riskBannerDismiss = byId("riskBannerDismiss");
 
   refs.nav = {
     business: byId("navBusiness"),
@@ -295,17 +525,27 @@ function initRefs() {
   refs.addIncomeButton = byId("addIncomeButton");
   refs.incomeAmountInput = byId("incomeAmountInput");
   refs.incomeDescriptionInput = byId("incomeDescriptionInput");
+  refs.personalIncomeList = byId("personalIncomeList");
+  refs.personalIncomeScope = byId("personalIncomeScope");
   refs.goalInput = byId("goalInput");
   refs.saveGoalButton = byId("saveGoalButton");
 
   refs.businessSalesCard = byId("businessSalesCard");
   refs.businessExpensesCard = byId("businessExpensesCard");
   refs.businessBalanceCard = byId("businessBalanceCard");
+  refs.businessPieChart = byId("businessPieChart");
+  refs.businessPieLegend = byId("businessPieLegend");
+  refs.businessPieTotal = byId("businessPieTotal");
+  refs.businessPieComparison = byId("businessPieComparison");
 
   refs.personalIncomeCard = byId("personalIncomeCard");
   refs.personalExpenseCard = byId("personalExpenseCard");
   refs.personalOpenCard = byId("personalOpenCard");
   refs.personalOpenMeta = byId("personalOpenMeta");
+  refs.personalPieChart = byId("personalPieChart");
+  refs.personalPieLegend = byId("personalPieLegend");
+  refs.personalPieTotal = byId("personalPieTotal");
+  refs.personalPieComparison = byId("personalPieComparison");
 
   refs.filterPending = byId("filterPending");
   refs.filterOverdue = byId("filterOverdue");
@@ -318,6 +558,89 @@ function initRefs() {
   refs.goalProgressBar = byId("goalProgressBar");
   refs.goalProgressText = byId("goalProgressText");
   refs.portfolioUpdatedAt = byId("portfolioUpdatedAt");
+}
+
+function buildDeleteSelectorColumnDef() {
+  return {
+    colId: DELETE_SELECTOR_COL_ID,
+    headerName: "",
+    checkboxSelection: true,
+    headerCheckboxSelection: true,
+    headerCheckboxSelectionFilteredOnly: true,
+    pinned: "left",
+    lockPinned: true,
+    editable: false,
+    sortable: false,
+    filter: false,
+    resizable: false,
+    suppressMovable: true,
+    maxWidth: 52,
+    minWidth: 52,
+    width: 52,
+    hide: true
+  };
+}
+
+function getDeleteMode(viewKey) {
+  if (viewKey === "business") return appState.businessDeleteMode;
+  if (viewKey === "personal") return appState.personalDeleteMode;
+  return appState.investmentDeleteMode;
+}
+
+function setDeleteModeState(viewKey, enabled) {
+  if (viewKey === "business") appState.businessDeleteMode = enabled;
+  else if (viewKey === "personal") appState.personalDeleteMode = enabled;
+  else appState.investmentDeleteMode = enabled;
+}
+
+function getDeleteIdleLabel(viewKey) {
+  if (viewKey === "personal") return "Excluir registro";
+  return "Excluir linha";
+}
+
+function getDeleteButtonRef(viewKey) {
+  if (viewKey === "business") return refs.deleteBusinessRow;
+  if (viewKey === "personal") return refs.deletePersonalRow;
+  return refs.deletePortfolioRow;
+}
+
+function getGridApiByView(viewKey) {
+  if (viewKey === "business") return gridState.businessApi;
+  if (viewKey === "personal") return gridState.personalApi;
+  return gridState.portfolioApi;
+}
+
+function setDeleteSelectorVisible(api, visible) {
+  if (!api) return;
+  if (typeof api.setColumnsVisible === "function") {
+    api.setColumnsVisible([DELETE_SELECTOR_COL_ID], visible);
+  } else if (typeof api.setColumnVisible === "function") {
+    api.setColumnVisible(DELETE_SELECTOR_COL_ID, visible);
+  }
+
+  if (!visible && typeof api.deselectAll === "function") {
+    api.deselectAll();
+  }
+}
+
+function setDeleteMode(viewKey, enabled) {
+  setDeleteModeState(viewKey, enabled);
+  const button = getDeleteButtonRef(viewKey);
+  if (button) {
+    button.textContent = enabled ? "Excluir selecionadas" : getDeleteIdleLabel(viewKey);
+  }
+
+  const api = getGridApiByView(viewKey);
+  setDeleteSelectorVisible(api, enabled);
+}
+
+function disableDeleteModesExcept(activeViewKey) {
+  for (const key of VIEW_KEYS) {
+    if (key === activeViewKey) continue;
+    if (getDeleteMode(key)) {
+      setDeleteMode(key, false);
+    }
+  }
 }
 
 function applyGlobalSearch(value) {
@@ -344,6 +667,79 @@ function hideUpdateBanner() {
   refs.updateBanner.classList.add("hidden");
 }
 
+function nowPtBr() {
+  return new Date().toLocaleString("pt-BR");
+}
+
+function setNotificationPanelOpen(open) {
+  appState.notificationsOpen = Boolean(open);
+  if (!refs.notificationPanel) return;
+  refs.notificationPanel.classList.toggle("hidden", !appState.notificationsOpen);
+  if (appState.notificationsOpen) {
+    appState.unreadNotifications = 0;
+    renderNotificationCenter();
+  }
+}
+
+function renderNotificationCenter() {
+  if (!refs.notificationCount || !refs.notificationMeta || !refs.notificationList) return;
+
+  const unread = Math.max(0, Number(appState.unreadNotifications || 0));
+  refs.notificationCount.textContent = String(unread > 99 ? "99+" : unread);
+  refs.notificationCount.classList.toggle("hidden", unread <= 0);
+
+  const total = appState.notifications.length;
+  refs.notificationMeta.textContent = total > 0 ? `${total} no historico` : "Sem novidades";
+
+  if (!total) {
+    refs.notificationList.innerHTML = '<p class="notification-empty">Nenhuma notificacao no momento.</p>';
+    return;
+  }
+
+  refs.notificationList.innerHTML = appState.notifications
+    .slice(0, 50)
+    .map((item) => {
+      const title = escapeHtml(item.title || "Notificacao");
+      const text = escapeHtml(item.text || "");
+      const time = escapeHtml(item.time || "");
+      return `
+        <div class="notification-item">
+          <p class="notification-item-title">${title}</p>
+          <p class="notification-item-text">${text}</p>
+          <p class="notification-item-time">${time}</p>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function pushNotification(title, text, dedupeKey = "") {
+  const key = String(dedupeKey || "").trim();
+  if (key) {
+    const existingIdx = appState.notifications.findIndex((item) => item.key === key);
+    if (existingIdx >= 0) {
+      appState.notifications.splice(existingIdx, 1);
+    }
+  }
+
+  appState.notifications.unshift({
+    key: key || `notif-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: String(title || "Notificacao"),
+    text: String(text || ""),
+    time: nowPtBr()
+  });
+
+  if (appState.notifications.length > 200) {
+    appState.notifications = appState.notifications.slice(0, 200);
+  }
+
+  if (!appState.notificationsOpen) {
+    appState.unreadNotifications += 1;
+  }
+
+  renderNotificationCenter();
+}
+
 function showUpdateBanner(payload) {
   const current = String(payload?.currentVersion || "").trim() || "atual";
   const latest = String(payload?.version || payload?.tag || "").trim() || "nova";
@@ -355,6 +751,83 @@ function showUpdateBanner(payload) {
 
   if (refs.updateBanner) {
     refs.updateBanner.classList.remove("hidden");
+  }
+
+  const updateKey = String(payload?.tag || payload?.version || "").trim();
+  if (updateKey && appState.lastUpdateNotificationKey !== updateKey) {
+    appState.lastUpdateNotificationKey = updateKey;
+    pushNotification(
+      "Atualizacao disponivel",
+      `Nova versao ${latest} detectada. Clique em Atualizar para baixar.`,
+      `update:${updateKey}`
+    );
+  }
+}
+
+function hideRiskBanner() {
+  appState.riskBannerDismissed = true;
+  if (refs.riskBanner) {
+    refs.riskBanner.classList.add("hidden");
+  }
+}
+
+function showRiskBanner() {
+  if (refs.riskBanner) {
+    refs.riskBanner.classList.remove("hidden");
+  }
+}
+
+function renderBillAlerts(payload) {
+  if (!refs.riskBanner || !refs.riskBannerTitle || !refs.riskBannerMeta || !refs.riskBannerList) return;
+
+  const bills = Array.isArray(payload?.bills) ? payload.bills : [];
+  const windowDays = Number(payload?.windowDays || 2);
+  const billKey = bills
+    .map((bill) => `${bill.id}|${bill.due_date}|${toNumber(bill.amount).toFixed(2)}`)
+    .sort()
+    .join(";");
+
+  if (!bills.length) {
+    refs.riskBannerTitle.textContent = "Sem alertas de vencimento";
+    refs.riskBannerMeta.textContent = `Nenhuma conta pendente vencendo nos proximos ${windowDays} dias.`;
+    refs.riskBannerList.innerHTML = "";
+    refs.riskBanner.classList.add("hidden");
+    appState.riskBannerDismissed = false;
+    appState.lastBillNotificationKey = "";
+    return;
+  }
+
+  refs.riskBannerTitle.textContent = `${bills.length} conta(s) com vencimento proximo`;
+  refs.riskBannerMeta.textContent = `Contas pendentes vencendo em ate ${windowDays} dias.`;
+
+  refs.riskBannerList.innerHTML = bills
+    .slice(0, 6)
+    .map((bill) => {
+      const label = String(bill.label || "em breve");
+      const text = `${String(bill.description || "Conta")} (${String(bill.category || "Sem categoria")}) vence ${label}`;
+      const amount = BRL.format(toNumber(bill.amount));
+      return `
+        <div class="risk-item">
+          <span class="risk-item-label">${escapeHtml(text)}</span>
+          <span class="risk-item-value">${escapeHtml(amount)}</span>
+        </div>
+      `;
+    })
+    .join("");
+
+  if (billKey && appState.lastBillNotificationKey !== billKey) {
+    appState.lastBillNotificationKey = billKey;
+    const preview = bills.slice(0, 2).map((bill) => bill.description).join(", ");
+    const suffix = bills.length > 2 ? ` e mais ${bills.length - 2}` : "";
+    pushNotification(
+      "Risco de vencimento",
+      `${bills.length} conta(s) vencem em ate ${windowDays} dias: ${preview}${suffix}.`,
+      `bills:${billKey}`
+    );
+  }
+
+  if (!appState.riskBannerDismissed) {
+    showRiskBanner();
   }
 }
 
@@ -399,12 +872,13 @@ function setActiveView(viewKey) {
     refs.nav[key].classList.toggle("menu-item-active", isActive);
     refs.nav[key].setAttribute("aria-current", isActive ? "page" : "false");
   }
+  disableDeleteModesExcept(viewKey);
   updateGlobalBalance();
 }
 
 function updateSidebarToggleLabel() {
   const collapsed = refs.sidebar.classList.contains("sidebar-collapsed");
-  refs.sidebarToggle.textContent = collapsed ? "▶" : "◀";
+  refs.sidebarToggle.textContent = collapsed ? ">" : "<";
 }
 
 function toggleSidebar() {
@@ -417,31 +891,22 @@ function setupShellEvents() {
   refs.themeToggle.addEventListener("click", toggleTheme);
   refs.globalSearch.addEventListener("input", (event) => applyGlobalSearch(event.target.value));
   refs.businessMonthInput.addEventListener("change", (event) => {
-    appState.businessMonthFilter = String(event.target.value || "");
-    renderBusinessRows();
+    setBusinessMonthFilter(parseMonthFromInput(event.target.value));
   });
   refs.businessMonthClear.addEventListener("click", () => {
-    appState.businessMonthFilter = "";
-    refs.businessMonthInput.value = "";
-    renderBusinessRows();
+    setBusinessMonthFilter("");
   });
   refs.personalMonthInput.addEventListener("change", (event) => {
-    appState.personalMonthFilter = String(event.target.value || "");
-    renderPersonalRows();
+    setPersonalMonthFilter(parseMonthFromInput(event.target.value));
   });
   refs.personalMonthClear.addEventListener("click", () => {
-    appState.personalMonthFilter = "";
-    refs.personalMonthInput.value = "";
-    renderPersonalRows();
+    setPersonalMonthFilter("");
   });
   refs.investmentMonthInput.addEventListener("change", (event) => {
-    appState.investmentMonthFilter = String(event.target.value || "");
-    renderPortfolioRows();
+    setInvestmentMonthFilter(parseMonthFromInput(event.target.value));
   });
   refs.investmentMonthClear.addEventListener("click", () => {
-    appState.investmentMonthFilter = "";
-    refs.investmentMonthInput.value = "";
-    renderPortfolioRows();
+    setInvestmentMonthFilter("");
   });
 
   refs.checkUpdatesButton.addEventListener("click", async () => {
@@ -480,11 +945,30 @@ function setupShellEvents() {
     hideUpdateBanner();
   });
 
+  refs.notificationToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setNotificationPanelOpen(!appState.notificationsOpen);
+  });
+
+  refs.notificationMarkRead.addEventListener("click", () => {
+    appState.unreadNotifications = 0;
+    renderNotificationCenter();
+  });
+
+  refs.riskBannerDismiss.addEventListener("click", () => {
+    hideRiskBanner();
+  });
+
   refs.nav.business.addEventListener("click", () => setActiveView("business"));
   refs.nav.personal.addEventListener("click", () => setActiveView("personal"));
   refs.nav.investments.addEventListener("click", () => setActiveView("investments"));
 
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && appState.notificationsOpen) {
+      setNotificationPanelOpen(false);
+      return;
+    }
+
     if (event.key !== "Delete") return;
 
     const target = event.target;
@@ -499,6 +983,14 @@ function setupShellEvents() {
     } else if (appState.activeView === "investments") {
       deleteFocusedPortfolioRow().catch((error) => console.error("Falha ao excluir linha de investimentos:", error));
     }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!appState.notificationsOpen) return;
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (target.closest("#notificationPanel") || target.closest("#notificationToggle")) return;
+    setNotificationPanelOpen(false);
   });
 }
 
@@ -525,6 +1017,15 @@ function isSameMonth(dateIso) {
 function matchesMonth(dateIso, monthValue) {
   if (!monthValue) return true;
   return String(dateIso || "").startsWith(String(monthValue));
+}
+
+function getPersonalExpenseReferenceDate(row) {
+  if (!row) return "";
+  const status = uiToDbStatus(row.status);
+  if (status === "Pago" && isValidIsoDate(row.paid_date)) {
+    return String(row.paid_date);
+  }
+  return String(row.due_date || "");
 }
 
 function monthLabel(monthValue) {
@@ -569,6 +1070,539 @@ function renderMonthTabs(container, months, activeValue, onSelect) {
   }
 }
 
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function decoratePieRows(rows) {
+  let incomeIdx = 0;
+  let expenseIdx = 0;
+
+  const sorted = [...rows].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "income" ? -1 : 1;
+    return b.value - a.value;
+  });
+
+  return sorted.map((row) => {
+    if (row.kind === "income") {
+      const color = PIE_COLORS_INCOME[incomeIdx % PIE_COLORS_INCOME.length];
+      incomeIdx += 1;
+      return { ...row, color };
+    }
+
+    const color = PIE_COLORS_EXPENSE[expenseIdx % PIE_COLORS_EXPENSE.length];
+    expenseIdx += 1;
+    return { ...row, color };
+  });
+}
+
+function looksNumericLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return /^[-+\d\s.,/:%R$r$]+$/.test(text);
+}
+
+function prettifySourceLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "Receita";
+
+  const normalized = text.toUpperCase();
+  const sourceMap = {
+    SALARIO: "Salario",
+    RENDA_EXTRA: "Renda extra",
+    DIVIDENDOS: "Dividendos",
+    JUROS: "Juros",
+    ALUGUEIS: "Alugueis",
+    OUTROS: "Outros"
+  };
+
+  if (sourceMap[normalized]) return sourceMap[normalized];
+  return text.replace(/_/g, " ");
+}
+
+function resolvePersonalIncomeLabel(row) {
+  const description = sanitizeCategory(row?.description);
+  if (description && !looksNumericLabel(description)) {
+    return description;
+  }
+
+  const source = sanitizeCategory(row?.source);
+  return prettifySourceLabel(source);
+}
+
+function disambiguateRepeatedLabels(rows) {
+  const counter = new Map();
+
+  for (const row of rows) {
+    const key = String(row.label || "").toLowerCase();
+    if (!key) continue;
+    counter.set(key, (counter.get(key) || 0) + 1);
+  }
+
+  return rows.map((row) => {
+    const key = String(row.label || "").toLowerCase();
+    const repeats = counter.get(key) || 0;
+    if (repeats <= 1) return row;
+
+    const suffix = row.kind === "income" ? " (ganho)" : " (gasto)";
+    return { ...row, label: `${row.label}${suffix}` };
+  });
+}
+
+function buildBusinessPieRows() {
+  const rows = filteredBusinessRows();
+  const grouped = new Map();
+
+  for (const row of rows) {
+    const amount = toNumber(row.amount);
+    if (amount <= 0) continue;
+
+    const isIncome = row.entry_type === "Entrada";
+    const category = sanitizeCategory(row.category) || "Sem categoria";
+    const key = `${isIncome ? "income" : "expense"}|${category.toLowerCase()}`;
+
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.value += amount;
+      continue;
+    }
+
+    grouped.set(key, {
+      kind: isIncome ? "income" : "expense",
+      label: category,
+      value: amount
+    });
+  }
+
+  const clean = Array.from(grouped.values()).filter((item) => item.value > 0);
+  return decoratePieRows(disambiguateRepeatedLabels(clean));
+}
+
+function buildPersonalPieRows() {
+  const grouped = new Map();
+
+  const incomes = appState.personalIncomes.filter((row) => {
+    if (!appState.personalMonthFilter) return true;
+    return matchesMonth(row.income_date, appState.personalMonthFilter);
+  });
+
+  for (const row of incomes) {
+    const amount = toNumber(row.amount);
+    if (amount <= 0) continue;
+
+    const label = resolvePersonalIncomeLabel(row);
+    const key = `income|${label.toLowerCase()}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.value += amount;
+      continue;
+    }
+
+    grouped.set(key, {
+      kind: "income",
+      label,
+      value: amount
+    });
+  }
+
+  const expenses = appState.personalExpenses.filter((row) => {
+    if (!appState.personalMonthFilter) return true;
+    return matchesMonth(getPersonalExpenseReferenceDate(row), appState.personalMonthFilter);
+  });
+
+  for (const row of expenses) {
+    const amount = toNumber(row.amount);
+    if (amount <= 0) continue;
+
+    const category = sanitizeCategory(row.category) || "Sem categoria";
+    const key = `expense|${category.toLowerCase()}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.value += amount;
+      continue;
+    }
+
+    grouped.set(key, {
+      kind: "expense",
+      label: category,
+      value: amount
+    });
+  }
+
+  const clean = Array.from(grouped.values()).filter((item) => item.value > 0);
+  return decoratePieRows(disambiguateRepeatedLabels(clean));
+}
+
+function renderPieChart(chartEl, legendEl, totalEl, rows) {
+  if (!chartEl || !legendEl || !totalEl) return;
+
+  const data = (rows || []).filter((item) => toNumber(item.value) > 0);
+  const incomeTotal = data
+    .filter((item) => item.kind === "income")
+    .reduce((sum, item) => sum + toNumber(item.value), 0);
+  const expenseTotal = data
+    .filter((item) => item.kind === "expense")
+    .reduce((sum, item) => sum + toNumber(item.value), 0);
+  const total = incomeTotal + expenseTotal;
+  const balance = incomeTotal - expenseTotal;
+
+  if (total <= 0 || !data.length) {
+    chartEl.style.background = "conic-gradient(#27272a 0 100%)";
+    totalEl.innerHTML = '<span class="pie-total-label">Sem dados</span>';
+    legendEl.innerHTML = '<p class="pie-empty">Sem movimentacoes para exibir.</p>';
+    return;
+  }
+
+  const segments = [];
+  let accumulated = 0;
+
+  for (const item of data) {
+    const start = accumulated;
+    const delta = (toNumber(item.value) / total) * 100;
+    accumulated += delta;
+    segments.push(`${item.color} ${start.toFixed(3)}% ${accumulated.toFixed(3)}%`);
+  }
+
+  chartEl.style.background = `conic-gradient(${segments.join(", ")})`;
+  const balanceLabel = "Saldo do periodo";
+  const balanceValue = `${balance >= 0 ? "+" : "-"} ${BRL.format(Math.abs(balance))}`;
+  totalEl.innerHTML = `
+    <span class="pie-total-label">${escapeHtml(balanceLabel)}</span>
+    <span class="pie-total-value">${escapeHtml(balanceValue)}</span>
+  `;
+
+  legendEl.innerHTML = data
+    .map((item) => {
+      const amount = toNumber(item.value);
+      const pct = total > 0 ? (amount / total) * 100 : 0;
+      return `
+        <div class="pie-legend-item">
+          <span class="pie-legend-dot" style="background:${escapeHtml(item.color)}"></span>
+          <span class="pie-legend-label" title="${escapeHtml(item.label)}">${escapeHtml(item.label)}</span>
+          <span class="pie-legend-value">${escapeHtml(BRL.format(amount))} (${pct.toFixed(1)}%)</span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function getPreviousMonthKey(monthValue) {
+  const month = extractMonth(monthValue);
+  if (!month) return "";
+  const [yearText, monthText] = month.split("-");
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  if (!Number.isFinite(year) || !Number.isFinite(monthNumber)) return "";
+
+  const date = new Date(year, monthNumber - 1, 1);
+  date.setMonth(date.getMonth() - 1);
+  const prevYear = date.getFullYear();
+  const prevMonth = String(date.getMonth() + 1).padStart(2, "0");
+  return `${prevYear}-${prevMonth}`;
+}
+
+function resolveComparisonMonth(monthFilter, availableMonths) {
+  const normalizedFilter = extractMonth(monthFilter);
+  if (normalizedFilter) return normalizedFilter;
+  const valid = uniqueCategories(availableMonths || []);
+  const sorted = sortMonthsDesc(valid.filter((item) => /^\d{4}-\d{2}$/.test(item)));
+  return sorted[0] || currentMonthPrefix();
+}
+
+function computeBusinessMonthTotals(monthKey) {
+  let income = 0;
+  let expense = 0;
+  let count = 0;
+
+  for (const row of appState.businessRows) {
+    if (!matchesMonth(row.entry_date, monthKey)) continue;
+    const amount = toNumber(row.amount);
+    if (amount <= 0) continue;
+    count += 1;
+    if (row.entry_type === "Entrada") income += amount;
+    else expense += amount;
+  }
+
+  return {
+    income,
+    expense,
+    balance: income - expense,
+    count
+  };
+}
+
+function computePersonalMonthTotals(monthKey) {
+  let income = 0;
+  let expense = 0;
+  let count = 0;
+
+  for (const row of appState.personalIncomes) {
+    if (!matchesMonth(row.income_date, monthKey)) continue;
+    const amount = toNumber(row.amount);
+    if (amount <= 0) continue;
+    income += amount;
+    count += 1;
+  }
+
+  for (const row of appState.personalExpenses) {
+    if (!matchesMonth(getPersonalExpenseReferenceDate(row), monthKey)) continue;
+    const amount = toNumber(row.amount);
+    if (amount <= 0) continue;
+    expense += amount;
+    count += 1;
+  }
+
+  return {
+    income,
+    expense,
+    balance: income - expense,
+    count
+  };
+}
+
+function formatPercentPtBr(value) {
+  return Number(value).toLocaleString("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1
+  });
+}
+
+function compareMetric(current, previous, preferLower) {
+  const delta = current - previous;
+  const almostZero = Math.abs(delta) < 0.005;
+  const percentage = Math.abs(previous) > 0 ? (delta / Math.abs(previous)) * 100 : null;
+
+  if (almostZero) {
+    return {
+      className: "compare-neutral",
+      text: `${BRL.format(0)} (0,0%) estavel`
+    };
+  }
+
+  const isBetter = preferLower ? delta < 0 : delta > 0;
+  const className = isBetter ? "compare-better" : "compare-worse";
+  const direction = delta > 0 ? "+" : "-";
+  const pctText = percentage === null ? "base 0" : `${direction}${formatPercentPtBr(Math.abs(percentage))}%`;
+  const verdict = isBetter ? "melhor" : "pior";
+  const deltaMoney = `${direction} ${BRL.format(Math.abs(delta))}`;
+
+  return {
+    className,
+    text: `${deltaMoney} (${pctText}) ${verdict}`
+  };
+}
+
+function renderMonthlyComparison(container, options) {
+  if (!container) return;
+
+  const {
+    title = "Comparativo mensal",
+    currentMonth,
+    previousMonth,
+    currentTotals,
+    previousTotals,
+    labels
+  } = options;
+
+  if (!currentMonth) {
+    container.innerHTML = `
+      <p class="pie-comparison-title">${escapeHtml(title)}</p>
+      <p class="pie-comparison-empty">Sem dados suficientes para comparar.</p>
+    `;
+    return;
+  }
+
+  if (!previousMonth) {
+    container.innerHTML = `
+      <p class="pie-comparison-title">${escapeHtml(title)}</p>
+      <p class="pie-comparison-month">${escapeHtml(monthLabel(currentMonth))}</p>
+      <p class="pie-comparison-empty">Ainda nao existe mes anterior para comparacao.</p>
+    `;
+    return;
+  }
+
+  const currentHasData = currentTotals.count > 0;
+  const previousHasData = previousTotals.count > 0;
+
+  if (!previousHasData) {
+    container.innerHTML = `
+      <p class="pie-comparison-title">${escapeHtml(title)}</p>
+      <p class="pie-comparison-month">${escapeHtml(`${monthLabel(currentMonth)} vs ${monthLabel(previousMonth)}`)}</p>
+      <p class="pie-comparison-empty">Sem lancamentos no mes anterior.</p>
+    `;
+    return;
+  }
+
+  if (!currentHasData) {
+    container.innerHTML = `
+      <p class="pie-comparison-title">${escapeHtml(title)}</p>
+      <p class="pie-comparison-month">${escapeHtml(`${monthLabel(currentMonth)} vs ${monthLabel(previousMonth)}`)}</p>
+      <p class="pie-comparison-empty">Sem lancamentos no mes selecionado.</p>
+    `;
+    return;
+  }
+
+  const income = compareMetric(currentTotals.income, previousTotals.income, false);
+  const expense = compareMetric(currentTotals.expense, previousTotals.expense, true);
+  const balance = compareMetric(currentTotals.balance, previousTotals.balance, false);
+
+  container.innerHTML = `
+    <p class="pie-comparison-title">${escapeHtml(title)}</p>
+    <p class="pie-comparison-month">${escapeHtml(`${monthLabel(currentMonth)} vs ${monthLabel(previousMonth)}`)}</p>
+    <div class="pie-comparison-list">
+      <div class="pie-comparison-item">
+        <span class="pie-comparison-label">${escapeHtml(labels.income)}</span>
+        <span class="pie-comparison-value ${escapeHtml(income.className)}">${escapeHtml(income.text)}</span>
+      </div>
+      <div class="pie-comparison-item">
+        <span class="pie-comparison-label">${escapeHtml(labels.expense)}</span>
+        <span class="pie-comparison-value ${escapeHtml(expense.className)}">${escapeHtml(expense.text)}</span>
+      </div>
+      <div class="pie-comparison-item">
+        <span class="pie-comparison-label">${escapeHtml(labels.balance)}</span>
+        <span class="pie-comparison-value ${escapeHtml(balance.className)}">${escapeHtml(balance.text)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function refreshBusinessMonthlyComparison() {
+  const months = new Set();
+  for (const row of appState.businessRows) {
+    const month = extractMonth(row.entry_date);
+    if (month) months.add(month);
+  }
+  if (appState.businessMonthFilter) {
+    months.add(appState.businessMonthFilter);
+  }
+
+  const currentMonth = resolveComparisonMonth(appState.businessMonthFilter, Array.from(months));
+  const previousMonth = getPreviousMonthKey(currentMonth);
+  const currentTotals = computeBusinessMonthTotals(currentMonth);
+  const previousTotals = previousMonth ? computeBusinessMonthTotals(previousMonth) : { income: 0, expense: 0, balance: 0, count: 0 };
+
+  renderMonthlyComparison(refs.businessPieComparison, {
+    title: "Comparativo mensal",
+    currentMonth,
+    previousMonth,
+    currentTotals,
+    previousTotals,
+    labels: {
+      income: "Entradas",
+      expense: "Saidas",
+      balance: "Saldo"
+    }
+  });
+}
+
+function refreshPersonalMonthlyComparison() {
+  const months = new Set();
+  for (const row of appState.personalIncomes) {
+    const month = extractMonth(row.income_date);
+    if (month) months.add(month);
+  }
+  for (const row of appState.personalExpenses) {
+    const month = extractMonth(getPersonalExpenseReferenceDate(row));
+    if (month) months.add(month);
+  }
+  if (appState.personalMonthFilter) {
+    months.add(appState.personalMonthFilter);
+  }
+
+  const currentMonth = resolveComparisonMonth(appState.personalMonthFilter, Array.from(months));
+  const previousMonth = getPreviousMonthKey(currentMonth);
+  const currentTotals = computePersonalMonthTotals(currentMonth);
+  const previousTotals = previousMonth ? computePersonalMonthTotals(previousMonth) : { income: 0, expense: 0, balance: 0, count: 0 };
+
+  renderMonthlyComparison(refs.personalPieComparison, {
+    title: "Comparativo mensal",
+    currentMonth,
+    previousMonth,
+    currentTotals,
+    previousTotals,
+    labels: {
+      income: "Receitas",
+      expense: "Gastos",
+      balance: "Saldo"
+    }
+  });
+}
+
+function refreshBusinessPieChart() {
+  renderPieChart(
+    refs.businessPieChart,
+    refs.businessPieLegend,
+    refs.businessPieTotal,
+    buildBusinessPieRows()
+  );
+  refreshBusinessMonthlyComparison();
+}
+
+function refreshPersonalPieChart() {
+  renderPieChart(
+    refs.personalPieChart,
+    refs.personalPieLegend,
+    refs.personalPieTotal,
+    buildPersonalPieRows()
+  );
+  refreshPersonalMonthlyComparison();
+}
+
+function getPersonalIncomeScopeMonth() {
+  return appState.personalMonthFilter || currentMonthPrefix();
+}
+
+function formatMonthScopeLabel(monthValue) {
+  const month = extractMonth(monthValue);
+  if (!month) return "Mes atual";
+  const [year, monthPart] = month.split("-");
+  return `${monthPart}/${year}`;
+}
+
+function getPersonalIncomesByScopeMonth() {
+  const month = getPersonalIncomeScopeMonth();
+  return appState.personalIncomes.filter((row) => matchesMonth(row.income_date, month));
+}
+
+function renderPersonalIncomeList() {
+  if (!refs.personalIncomeList || !refs.personalIncomeScope) return;
+
+  const month = getPersonalIncomeScopeMonth();
+  refs.personalIncomeScope.textContent = `Receitas ${formatMonthScopeLabel(month)}`;
+
+  const rows = getPersonalIncomesByScopeMonth();
+  if (!rows.length) {
+    refs.personalIncomeList.innerHTML = '<p class="income-empty">Nenhuma receita lancada.</p>';
+    return;
+  }
+
+  refs.personalIncomeList.innerHTML = rows
+    .map((row) => {
+      const id = Number(row.id);
+      const label = resolvePersonalIncomeLabel(row);
+      return `
+        <span class="income-chip">
+          <span class="income-chip-label">${escapeHtml(label)} - ${escapeHtml(BRL.format(toNumber(row.amount)))}</span>
+          <button
+            type="button"
+            class="income-chip-remove"
+            data-income-delete-id="${Number.isFinite(id) ? id : ""}"
+            title="Excluir receita"
+            aria-label="Excluir receita"
+          >
+            x
+          </button>
+        </span>
+      `;
+    })
+    .join("");
+}
+
 function computeBusinessSummary() {
   const today = todayISO();
   let sales = 0;
@@ -595,7 +1629,7 @@ function computePersonalSummary() {
     .reduce((acc, row) => acc + toNumber(row.amount), 0);
 
   const expenseMonth = appState.personalExpenses
-    .filter((row) => isSameMonth(row.due_date))
+    .filter((row) => isSameMonth(getPersonalExpenseReferenceDate(row)))
     .reduce((acc, row) => acc + toNumber(row.amount), 0);
 
   const openRows = appState.personalExpenses.filter((row) => row.status === "Pendente");
@@ -635,6 +1669,7 @@ function refreshBusinessCards() {
   refs.businessBalanceCard.textContent = BRL.format(summary.balance);
   refs.businessBalanceCard.classList.toggle("money-positive", summary.balance >= 0);
   refs.businessBalanceCard.classList.toggle("money-negative", summary.balance < 0);
+  refreshBusinessPieChart();
   updateGlobalBalance();
 }
 
@@ -644,6 +1679,8 @@ function refreshPersonalCards() {
   refs.personalExpenseCard.textContent = BRL.format(summary.expenseMonth);
   refs.personalOpenCard.textContent = BRL.format(summary.openAmount);
   refs.personalOpenMeta.textContent = `${summary.openCount} abertas / ${summary.overdueCount} vencidas`;
+  refreshPersonalPieChart();
+  renderPersonalIncomeList();
   updateGlobalBalance();
 }
 
@@ -673,9 +1710,53 @@ function updateGlobalBalance() {
   refs.topbarBalance.textContent = BRL.format(current);
 }
 
+function setBusinessMonthFilter(monthValue, options = {}) {
+  const normalized = extractMonth(monthValue);
+  appState.businessMonthFilter = normalized;
+  if (refs.businessMonthInput) {
+    refs.businessMonthInput.value = monthToDateInputValue(normalized);
+  }
+  if (options.render !== false) renderBusinessRows();
+}
+
+function setPersonalMonthFilter(monthValue, options = {}) {
+  const normalized = extractMonth(monthValue);
+  appState.personalMonthFilter = normalized;
+  if (refs.personalMonthInput) {
+    refs.personalMonthInput.value = monthToDateInputValue(normalized);
+  }
+  if (options.render !== false) renderPersonalRows();
+  renderPersonalIncomeList();
+}
+
+function setInvestmentMonthFilter(monthValue, options = {}) {
+  const normalized = extractMonth(monthValue);
+  appState.investmentMonthFilter = normalized;
+  if (refs.investmentMonthInput) {
+    refs.investmentMonthInput.value = monthToDateInputValue(normalized);
+  }
+  if (options.render !== false) renderPortfolioRows();
+}
+
 function filteredBusinessRows() {
-  if (!appState.businessMonthFilter) return appState.businessRows;
-  return appState.businessRows.filter((row) => matchesMonth(row.entry_date, appState.businessMonthFilter));
+  let rows = appState.businessRows;
+  if (appState.businessMonthFilter) {
+    rows = rows.filter((row) => matchesMonth(row.entry_date, appState.businessMonthFilter));
+  }
+
+  return [...rows].sort((a, b) => {
+    const dateA = String(a.entry_date || "");
+    const dateB = String(b.entry_date || "");
+    if (dateA !== dateB) return dateA.localeCompare(dateB);
+
+    const idxA = Math.max(1, Number.isFinite(Number(a.installment_index)) ? Math.floor(Number(a.installment_index)) : 1);
+    const idxB = Math.max(1, Number.isFinite(Number(b.installment_index)) ? Math.floor(Number(b.installment_index)) : 1);
+    if (idxA !== idxB) return idxA - idxB;
+
+    const idA = Number.isFinite(Number(a.id)) ? Number(a.id) : Number.MAX_SAFE_INTEGER;
+    const idB = Number.isFinite(Number(b.id)) ? Number(b.id) : Number.MAX_SAFE_INTEGER;
+    return idA - idB;
+  });
 }
 
 function renderBusinessMonthTabs() {
@@ -692,9 +1773,7 @@ function renderBusinessMonthTabs() {
     Array.from(months),
     appState.businessMonthFilter,
     (month) => {
-      appState.businessMonthFilter = month;
-      refs.businessMonthInput.value = month;
-      renderBusinessRows();
+      setBusinessMonthFilter(month);
     }
   );
 }
@@ -703,6 +1782,7 @@ function renderBusinessRows() {
   if (!gridState.businessApi) return;
   gridState.businessApi.setGridOption("rowData", filteredBusinessRows());
   renderBusinessMonthTabs();
+  refreshBusinessPieChart();
 }
 
 function filteredPersonalRows() {
@@ -711,19 +1791,32 @@ function filteredPersonalRows() {
   const today = todayISO();
 
   if (appState.personalMonthFilter) {
-    rows = rows.filter((row) => matchesMonth(row.due_date, appState.personalMonthFilter));
+    rows = rows.filter((row) => matchesMonth(getPersonalExpenseReferenceDate(row), appState.personalMonthFilter));
   }
 
-  if (key === "pending") return rows.filter((row) => row.status === "Pendente");
-  if (key === "overdue") return rows.filter((row) => row.status === "Pendente" && row.due_date < today);
-  if (key === "month") return rows.filter((row) => isSameMonth(row.due_date));
-  return rows;
+  if (key === "pending") rows = rows.filter((row) => row.status === "Pendente");
+  else if (key === "overdue") rows = rows.filter((row) => row.status === "Pendente" && row.due_date < today);
+  else if (key === "month") rows = rows.filter((row) => isSameMonth(getPersonalExpenseReferenceDate(row)));
+
+  return [...rows].sort((a, b) => {
+    const dueA = getPersonalExpenseReferenceDate(a);
+    const dueB = getPersonalExpenseReferenceDate(b);
+    if (dueA !== dueB) return dueA.localeCompare(dueB);
+
+    const idxA = Math.max(1, Number.isFinite(Number(a.installment_index)) ? Math.floor(Number(a.installment_index)) : 1);
+    const idxB = Math.max(1, Number.isFinite(Number(b.installment_index)) ? Math.floor(Number(b.installment_index)) : 1);
+    if (idxA !== idxB) return idxA - idxB;
+
+    const idA = Number.isFinite(Number(a.id)) ? Number(a.id) : Number.MAX_SAFE_INTEGER;
+    const idB = Number.isFinite(Number(b.id)) ? Number(b.id) : Number.MAX_SAFE_INTEGER;
+    return idA - idB;
+  });
 }
 
 function renderPersonalMonthTabs() {
   const months = new Set();
   for (const row of appState.personalExpenses) {
-    const month = extractMonth(row.due_date);
+    const month = extractMonth(getPersonalExpenseReferenceDate(row));
     if (month) months.add(month);
   }
   if (appState.personalMonthFilter) {
@@ -734,9 +1827,7 @@ function renderPersonalMonthTabs() {
     Array.from(months),
     appState.personalMonthFilter,
     (month) => {
-      appState.personalMonthFilter = month;
-      refs.personalMonthInput.value = month;
-      renderPersonalRows();
+      setPersonalMonthFilter(month);
     }
   );
 }
@@ -745,6 +1836,8 @@ function renderPersonalRows() {
   if (!gridState.personalApi) return;
   gridState.personalApi.setGridOption("rowData", filteredPersonalRows());
   renderPersonalMonthTabs();
+  refreshPersonalPieChart();
+  refreshPersonalCards();
 }
 
 function filteredPortfolioRows() {
@@ -769,9 +1862,7 @@ function renderInvestmentMonthTabs() {
     Array.from(months),
     appState.investmentMonthFilter,
     (month) => {
-      appState.investmentMonthFilter = month;
-      refs.investmentMonthInput.value = month;
-      renderPortfolioRows();
+      setInvestmentMonthFilter(month);
     }
   );
 }
@@ -810,12 +1901,21 @@ function setupPersonalFilterEvents() {
 
 function initBusinessGrid() {
   const columnDefs = [
+    buildDeleteSelectorColumnDef(),
     {
       headerName: "Data",
       field: "entry_date",
       editable: true,
       minWidth: 120,
       maxWidth: 140,
+      cellEditor: "agDateStringCellEditor",
+      cellEditorParams: { min: "1900-01-01", max: "2100-12-31" },
+      valueParser: (params) =>
+        normalizeIsoDate(
+          params.newValue,
+          params.oldValue || todayISO(),
+          params.oldValue || todayISO()
+        ),
       valueFormatter: (params) => formatDateBR(params.value)
     },
     {
@@ -831,8 +1931,10 @@ function initBusinessGrid() {
       editable: true,
       minWidth: 120,
       maxWidth: 140,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: { values: ["Entrada", "Saida"] },
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: { values: ["Entrada", "Saida"], center: true },
+      headerClass: "header-center",
+      cellClass: "cell-center",
       valueGetter: (params) => dbToUiBusinessType(params.data.entry_type),
       valueSetter: (params) => {
         params.data.entry_type = uiToDbBusinessType(params.newValue);
@@ -844,8 +1946,10 @@ function initBusinessGrid() {
       field: "category",
       editable: true,
       minWidth: 180,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: () => ({ values: appState.businessCategories })
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: () => ({ values: appState.businessCategories, center: true })
     },
     {
       headerName: "Valor",
@@ -859,12 +1963,46 @@ function initBusinessGrid() {
         "money-positive": (params) => params.data?.entry_type === "Entrada",
         "money-negative": (params) => params.data?.entry_type === "Saida"
       }
+    },
+    {
+      headerName: "Parcela",
+      field: "installment_progress",
+      editable: false,
+      minWidth: 110,
+      maxWidth: 120,
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueGetter: (params) => {
+        const total = toInstallmentTotal(params.data.installment_total);
+        const index = Math.min(
+          total,
+          Math.max(1, Number.isFinite(Number(params.data.installment_index)) ? Math.floor(Number(params.data.installment_index)) : 1)
+        );
+        return `${index}/${total}`;
+      }
+    },
+    {
+      headerName: "Meses",
+      field: "installment_total",
+      editable: (params) => {
+        const idx = Number(params.data.installment_index || 1);
+        const total = toInstallmentTotal(params.data.installment_total);
+        return idx <= 1 && total <= 1;
+      },
+      minWidth: 95,
+      maxWidth: 105,
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueParser: (params) => toInstallmentTotal(params.newValue),
+      valueFormatter: (params) => String(toInstallmentTotal(params.value))
     }
   ];
 
   const gridOptions = {
     rowData: filteredBusinessRows(),
     columnDefs,
+    rowSelection: "multiple",
+    suppressRowClickSelection: true,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
     defaultColDef: {
       editable: true,
@@ -895,8 +2033,30 @@ function initBusinessGrid() {
 
       gridState.savingBusiness = true;
       try {
-        const saved = normalizeBusinessRow(await window.financeAPI.saveBusinessEntry(changed));
-        upsertIntoList(appState.businessRows, saved);
+        const savedRaw = await window.financeAPI.saveBusinessEntry(changed);
+        const generatedRowsRaw = Array.isArray(savedRaw?.generated_rows) ? savedRaw.generated_rows : [];
+
+        if (generatedRowsRaw.length > 0) {
+          removeFromListByIdentity(appState.businessRows, changed);
+          for (const generatedRaw of generatedRowsRaw) {
+            const generated = normalizeBusinessRow(generatedRaw);
+            upsertIntoList(appState.businessRows, generated);
+          }
+
+          if (!appState.businessMonthFilter) {
+            const firstRow = generatedRowsRaw[0];
+            const firstMonth = extractMonth(firstRow?.entry_date);
+            if (firstMonth) {
+              setBusinessMonthFilter(firstMonth, { render: false });
+            }
+          }
+        } else {
+          if (changed.__tmpId && !savedRaw.__tmpId) {
+            savedRaw.__tmpId = changed.__tmpId;
+          }
+          const saved = normalizeBusinessRow(savedRaw);
+          upsertIntoList(appState.businessRows, saved);
+        }
         renderBusinessRows();
         refreshBusinessCards();
       } finally {
@@ -910,12 +2070,21 @@ function initBusinessGrid() {
 
 function initPersonalGrid() {
   const columnDefs = [
+    buildDeleteSelectorColumnDef(),
     {
       headerName: "Vencimento",
       field: "due_date",
       editable: true,
       minWidth: 130,
       maxWidth: 150,
+      cellEditor: "agDateStringCellEditor",
+      cellEditorParams: { min: "1900-01-01", max: "2100-12-31" },
+      valueParser: (params) =>
+        normalizeIsoDate(
+          params.newValue,
+          params.oldValue || todayISO(),
+          params.oldValue || todayISO()
+        ),
       valueFormatter: (params) => formatDateBR(params.value)
     },
     {
@@ -930,8 +2099,10 @@ function initPersonalGrid() {
       field: "category",
       editable: true,
       minWidth: 160,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: () => ({ values: appState.personalCategories })
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: () => ({ values: appState.personalCategories, center: true })
     },
     {
       headerName: "Valor",
@@ -943,13 +2114,47 @@ function initPersonalGrid() {
       cellClass: "money-negative"
     },
     {
+      headerName: "Parcela",
+      field: "installment_progress",
+      editable: false,
+      minWidth: 110,
+      maxWidth: 120,
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueGetter: (params) => {
+        const total = toInstallmentTotal(params.data.installment_total);
+        const index = Math.min(
+          total,
+          Math.max(1, Number.isFinite(Number(params.data.installment_index)) ? Math.floor(Number(params.data.installment_index)) : 1)
+        );
+        return `${index}/${total}`;
+      }
+    },
+    {
+      headerName: "Meses",
+      field: "installment_total",
+      editable: (params) => {
+        const idx = Number(params.data.installment_index || 1);
+        const total = toInstallmentTotal(params.data.installment_total);
+        return idx <= 1 && total <= 1;
+      },
+      minWidth: 95,
+      maxWidth: 105,
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueParser: (params) => toInstallmentTotal(params.newValue),
+      valueFormatter: (params) => String(toInstallmentTotal(params.value))
+    },
+    {
       headerName: "Status",
       field: "status",
       editable: true,
       minWidth: 120,
       maxWidth: 140,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: { values: ["Pendente", "Pago"] },
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: { values: ["Pendente", "Pago"], center: true },
+      headerClass: "header-center",
+      cellClass: "cell-center",
       valueGetter: (params) => dbToUiStatus(params.data.status),
       valueSetter: (params) => {
         params.data.status = uiToDbStatus(params.newValue);
@@ -967,6 +2172,8 @@ function initPersonalGrid() {
   const gridOptions = {
     rowData: filteredPersonalRows(),
     columnDefs,
+    rowSelection: "multiple",
+    suppressRowClickSelection: true,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
     defaultColDef: {
       editable: true,
@@ -996,8 +2203,30 @@ function initPersonalGrid() {
 
       gridState.savingPersonal = true;
       try {
-        const saved = normalizePersonalExpenseRow(await window.financeAPI.savePersonalExpense(changed));
-        upsertIntoList(appState.personalExpenses, saved);
+        const savedRaw = await window.financeAPI.savePersonalExpense(changed);
+        const generatedRowsRaw = Array.isArray(savedRaw?.generated_rows) ? savedRaw.generated_rows : [];
+
+        if (generatedRowsRaw.length > 0) {
+          removeFromListByIdentity(appState.personalExpenses, changed);
+          for (const generatedRaw of generatedRowsRaw) {
+            const generated = normalizePersonalExpenseRow(generatedRaw);
+            upsertIntoList(appState.personalExpenses, generated);
+          }
+
+          if (!appState.personalMonthFilter) {
+            const firstRow = generatedRowsRaw[0];
+            const firstMonth = extractMonth(firstRow?.due_date);
+            if (firstMonth) {
+              setPersonalMonthFilter(firstMonth, { render: false });
+            }
+          }
+        } else {
+          if (changed.__tmpId && !savedRaw.__tmpId) {
+            savedRaw.__tmpId = changed.__tmpId;
+          }
+          const saved = normalizePersonalExpenseRow(savedRaw);
+          upsertIntoList(appState.personalExpenses, saved);
+        }
         renderPersonalRows();
         refreshPersonalCards();
       } finally {
@@ -1011,6 +2240,7 @@ function initPersonalGrid() {
 
 function initPortfolioGrid() {
   const columnDefs = [
+    buildDeleteSelectorColumnDef(),
     {
       headerName: "Ativo/Banco",
       field: "asset_label",
@@ -1024,8 +2254,10 @@ function initPortfolioGrid() {
       editable: true,
       minWidth: 110,
       maxWidth: 130,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: { values: ["Acao", "FII", "CDB"] },
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: { values: ["Acao", "FII", "CDB"], center: true },
+      headerClass: "header-center",
+      cellClass: "cell-center",
       valueGetter: (params) => dbToUiAssetType(params.data.asset_type),
       valueSetter: (params) => {
         params.data.asset_type = uiToDbAssetType(params.newValue);
@@ -1121,6 +2353,8 @@ function initPortfolioGrid() {
   const gridOptions = {
     rowData: filteredPortfolioRows(),
     columnDefs,
+    rowSelection: "multiple",
+    suppressRowClickSelection: true,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
     defaultColDef: {
       editable: true,
@@ -1144,7 +2378,11 @@ function initPortfolioGrid() {
 
       gridState.savingPortfolio = true;
       try {
-        const saved = normalizePortfolioRow(await window.financeAPI.savePortfolioPosition(changed));
+        const savedRaw = await window.financeAPI.savePortfolioPosition(changed);
+        if (changed.__tmpId && !savedRaw.__tmpId) {
+          savedRaw.__tmpId = changed.__tmpId;
+        }
+        const saved = normalizePortfolioRow(savedRaw);
         upsertIntoList(appState.portfolioRows, saved);
         renderPortfolioRows();
         refreshInvestmentCards();
@@ -1163,6 +2401,15 @@ function getFocusedRowData(api) {
   if (!focused || typeof focused.rowIndex !== "number") return null;
   const rowNode = api.getDisplayedRowAtIndex(focused.rowIndex);
   return rowNode?.data || null;
+}
+
+function focusFirstRowForEditing(api, colKey) {
+  if (!api) return;
+  const firstRow = api.getDisplayedRowAtIndex(0);
+  if (!firstRow) return;
+  api.ensureIndexVisible(0, "top");
+  api.setFocusedCell(0, colKey);
+  api.startEditingCell({ rowIndex: 0, colKey });
 }
 
 function removeFromListByIdentity(list, row) {
@@ -1212,9 +2459,92 @@ async function deleteFocusedPortfolioRow() {
   refreshInvestmentCards();
 }
 
+async function deletePersonalIncomeById(incomeId) {
+  const parsed = Number(incomeId);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+
+  const result = await window.financeAPI.deletePersonalIncome(parsed);
+  if (!result?.ok) return false;
+
+  const idx = appState.personalIncomes.findIndex((row) => Number(row.id) === parsed);
+  if (idx >= 0) appState.personalIncomes.splice(idx, 1);
+
+  refreshPersonalCards();
+  return true;
+}
+
+function getSelectedRows(api) {
+  if (!api || typeof api.getSelectedRows !== "function") return [];
+  const selected = api.getSelectedRows();
+  return Array.isArray(selected) ? selected.filter(Boolean) : [];
+}
+
+async function deleteRowsBatch(rows, remoteDeleteFn, list) {
+  for (const row of rows) {
+    if (!row) continue;
+
+    let canRemoveLocal = true;
+    if (row.id) {
+      try {
+        const result = await remoteDeleteFn(row.id);
+        canRemoveLocal = Boolean(result?.ok);
+      } catch (error) {
+        canRemoveLocal = false;
+        console.error("Falha ao excluir linha:", error);
+      }
+    }
+
+    if (canRemoveLocal) {
+      removeFromListByIdentity(list, row);
+    }
+  }
+}
+
+async function deleteSelectedRowsFromView(viewKey, rows) {
+  if (!rows.length) return;
+
+  if (viewKey === "business") {
+    await deleteRowsBatch(rows, window.financeAPI.deleteBusinessEntry, appState.businessRows);
+    renderBusinessRows();
+    refreshBusinessCards();
+    return;
+  }
+
+  if (viewKey === "personal") {
+    await deleteRowsBatch(rows, window.financeAPI.deletePersonalExpense, appState.personalExpenses);
+    renderPersonalRows();
+    refreshPersonalCards();
+    return;
+  }
+
+  await deleteRowsBatch(rows, window.financeAPI.deletePortfolioPosition, appState.portfolioRows);
+  renderPortfolioRows();
+  refreshInvestmentCards();
+}
+
+async function handleDeleteButtonClick(viewKey) {
+  const isMode = getDeleteMode(viewKey);
+  if (!isMode) {
+    disableDeleteModesExcept(viewKey);
+    setDeleteMode(viewKey, true);
+    return;
+  }
+
+  const api = getGridApiByView(viewKey);
+  const selectedRows = getSelectedRows(api);
+
+  if (!selectedRows.length) {
+    setDeleteMode(viewKey, false);
+    return;
+  }
+
+  await deleteSelectedRowsFromView(viewKey, selectedRows);
+  setDeleteMode(viewKey, false);
+}
+
 function registerAddButtons() {
   refs.deleteBusinessRow.addEventListener("click", () => {
-    deleteFocusedBusinessRow().catch((error) => console.error("Falha ao excluir linha empresarial:", error));
+    handleDeleteButtonClick("business").catch((error) => console.error("Falha ao excluir linhas empresariais:", error));
   });
 
   refs.addBusinessRow.addEventListener("click", () => {
@@ -1223,32 +2553,56 @@ function registerAddButtons() {
       description: "Nova movimentacao",
       entry_type: "Entrada",
       category: appState.businessCategories[0] || "Venda Balcao",
-      amount: 0
+      amount: 0,
+      installment_total: 1,
+      installment_index: 1,
+      installment_group_id: null
     });
+
+    const rowMonth = extractMonth(row.entry_date);
+    if (appState.businessMonthFilter && rowMonth && appState.businessMonthFilter !== rowMonth) {
+      setBusinessMonthFilter(rowMonth, { render: false });
+    }
+
     upsertIntoList(appState.businessRows, row);
     renderBusinessRows();
     refreshBusinessCards();
+    focusFirstRowForEditing(gridState.businessApi, "description");
   });
 
   refs.deletePersonalRow.addEventListener("click", () => {
-    deleteFocusedPersonalRow().catch((error) => console.error("Falha ao excluir linha pessoal:", error));
+    handleDeleteButtonClick("personal").catch((error) => console.error("Falha ao excluir linhas pessoais:", error));
   });
 
   refs.addPersonalRow.addEventListener("click", () => {
     const row = normalizePersonalExpenseRow({
       due_date: todayISO(),
-      description: "Nova conta",
+      description: "Novo registro",
       category: appState.personalCategories[0] || "Moradia",
       amount: 0,
-      status: "Pendente"
+      status: "Pendente",
+      installment_total: 1,
+      installment_index: 1,
+      installment_group_id: null
     });
+
+    const rowMonth = extractMonth(row.due_date);
+    if (appState.personalMonthFilter && rowMonth && appState.personalMonthFilter !== rowMonth) {
+      setPersonalMonthFilter(rowMonth, { render: false });
+    }
+    if (appState.personalFilter !== "none") {
+      appState.personalFilter = "none";
+      updateFilterButtons();
+    }
+
     upsertIntoList(appState.personalExpenses, row);
     renderPersonalRows();
     refreshPersonalCards();
+    focusFirstRowForEditing(gridState.personalApi, "description");
   });
 
   refs.deletePortfolioRow.addEventListener("click", () => {
-    deleteFocusedPortfolioRow().catch((error) => console.error("Falha ao excluir linha de investimentos:", error));
+    handleDeleteButtonClick("investments").catch((error) => console.error("Falha ao excluir linhas de investimentos:", error));
   });
 
   refs.addPortfolioRow.addEventListener("click", () => {
@@ -1259,11 +2613,19 @@ function registerAddButtons() {
       quantity: 0,
       avg_price: 0,
       current_unit_price: 0,
-      current_value: 0
+      current_value: 0,
+      updated_at: todayISO()
     });
+
+    const rowMonth = getInvestmentMonthKey(row);
+    if (appState.investmentMonthFilter && rowMonth && appState.investmentMonthFilter !== rowMonth) {
+      setInvestmentMonthFilter(rowMonth, { render: false });
+    }
+
     upsertIntoList(appState.portfolioRows, row);
     renderPortfolioRows();
     refreshInvestmentCards();
+    focusFirstRowForEditing(gridState.portfolioApi, "asset_label");
   });
 
   refs.addBusinessCategoryButton.addEventListener("click", () => {
@@ -1324,6 +2686,21 @@ function registerAddButtons() {
     } catch (error) {
       console.error("Falha ao salvar receita:", error);
     }
+  });
+
+  refs.personalIncomeList.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+
+    const button = target.closest("[data-income-delete-id]");
+    if (!button) return;
+
+    const incomeId = Number(button.getAttribute("data-income-delete-id"));
+    if (!Number.isFinite(incomeId) || incomeId <= 0) return;
+
+    deletePersonalIncomeById(incomeId).catch((error) => {
+      console.error("Falha ao excluir receita:", error);
+    });
   });
 
   refs.saveGoalButton.addEventListener("click", async () => {
@@ -1392,6 +2769,7 @@ function applyPortfolioPolling(payload) {
 
 async function bootstrap() {
   initRefs();
+  renderNotificationCenter();
   updateSidebarToggleLabel();
   setupShellEvents();
   setupPersonalFilterEvents();
@@ -1409,6 +2787,7 @@ async function bootstrap() {
   appState.personalExpenses = (initialData.personalExpenses || []).map(normalizePersonalExpenseRow);
   appState.portfolioRows = (initialData.portfolioPositions || []).map(normalizePortfolioRow);
   initCategoryState(initialData.userSettings || {});
+  renderBillAlerts(initialData.billAlerts || { bills: [], windowDays: 2 });
 
   initBusinessGrid();
   initPersonalGrid();
@@ -1428,6 +2807,10 @@ async function bootstrap() {
 
   window.financeAPI.onUpdateAvailable((payload) => showUpdateBanner(payload));
   window.financeAPI.onPortfolioUpdated((payload) => applyPortfolioPolling(payload));
+  window.financeAPI.onBillAlerts((payload) => renderBillAlerts(payload));
+  window.financeAPI.getBillAlerts().then((payload) => renderBillAlerts(payload)).catch((error) => {
+    console.error("Falha ao atualizar alertas de vencimento:", error);
+  });
   window.financeAPI.checkForUpdatesNow().catch((error) => {
     console.error("Falha na verificacao inicial de update:", error);
   });
