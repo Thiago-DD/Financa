@@ -29,12 +29,12 @@ jobs:
       - name: Build installer
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        shell: pwsh
+        shell: cmd
         run: |
-          npm run build:github 2>&1 | Tee-Object -FilePath build.log
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
+          npm run build:github > build.log 2>&1
+          set EXIT_CODE=%ERRORLEVEL%
+          type build.log
+          exit /b %EXIT_CODE%
 
       - name: Upload build log (always)
         if: always()
