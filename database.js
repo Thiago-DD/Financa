@@ -42,7 +42,7 @@ function initDatabase(dbFilePath) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       entry_date TEXT NOT NULL,
       description TEXT NOT NULL,
-      entry_type TEXT NOT NULL CHECK (entry_type IN ('Entrada', 'Saída', 'Saida')),
+      entry_type TEXT NOT NULL CHECK (entry_type IN ('Entrada', 'Saida')),
       category TEXT NOT NULL,
       amount REAL NOT NULL,
       notes TEXT DEFAULT '',
@@ -109,16 +109,20 @@ function initDatabase(dbFilePath) {
     );
   `);
 
+  // Normaliza dados antigos com encoding/valor legados.
+  db.prepare(`
+    UPDATE business_entries
+    SET entry_type = 'Saida'
+    WHERE entry_type <> 'Entrada' AND entry_type <> 'Saida'
+  `).run();
+
   seedDatabase(db);
   return db;
 }
 
 function seedDatabase(db) {
-  seedBusiness(db);
-  seedPersonalIncomes(db);
+  // Mantem apenas configuracao base. Sem seed de dados ficticios.
   seedUserSettings(db);
-  seedPersonalExpenses(db);
-  seedPortfolio(db);
 }
 
 function seedUserSettings(db) {
@@ -129,233 +133,6 @@ function seedUserSettings(db) {
   `);
 
   insert.run("meta_patrimonio", "100000", nowISO());
-}
-
-function seedBusiness(db) {
-  const count = db.prepare("SELECT COUNT(*) AS total FROM business_entries").get().total;
-  if (count > 0) return;
-
-  const insert = db.prepare(`
-    INSERT INTO business_entries (
-      entry_date, description, entry_type, category, amount, notes, created_at, updated_at
-    ) VALUES (
-      @entry_date, @description, @entry_type, @category, @amount, @notes, @created_at, @updated_at
-    )
-  `);
-
-  const stamp = nowISO();
-  const rows = [
-    {
-      entry_date: "2026-04-29",
-      description: "Vendas balcao - cartoes",
-      entry_type: "Entrada",
-      category: "Venda Balcao",
-      amount: 3124.8,
-      notes: ""
-    },
-    {
-      entry_date: "2026-04-29",
-      description: "Vendas balcao - PIX",
-      entry_type: "Entrada",
-      category: "Venda Balcao",
-      amount: 1460.5,
-      notes: ""
-    },
-    {
-      entry_date: "2026-04-29",
-      description: "Sangria para cofre",
-      entry_type: "Saída",
-      category: "Sangria",
-      amount: 1800,
-      notes: ""
-    },
-    {
-      entry_date: "2026-04-29",
-      description: "Fornecedor hortifruti",
-      entry_type: "Saída",
-      category: "Fornecedor",
-      amount: 890.7,
-      notes: ""
-    }
-  ];
-
-  const tx = db.transaction((payload) => {
-    for (const row of payload) {
-      insert.run({ ...row, created_at: stamp, updated_at: stamp });
-    }
-  });
-  tx(rows);
-}
-
-function seedPersonalIncomes(db) {
-  const count = db.prepare("SELECT COUNT(*) AS total FROM personal_incomes").get().total;
-  if (count > 0) return;
-
-  const insert = db.prepare(`
-    INSERT INTO personal_incomes (
-      income_date, description, source, amount, notes, created_at, updated_at
-    ) VALUES (
-      @income_date, @description, @source, @amount, @notes, @created_at, @updated_at
-    )
-  `);
-
-  const stamp = nowISO();
-  const rows = [
-    {
-      income_date: "2026-04-05",
-      description: "Salario principal",
-      source: "SALARIO",
-      amount: 5500,
-      notes: ""
-    },
-    {
-      income_date: "2026-04-20",
-      description: "Renda extra",
-      source: "RENDA_EXTRA",
-      amount: 900,
-      notes: "Freelance"
-    }
-  ];
-
-  const tx = db.transaction((payload) => {
-    for (const row of payload) {
-      insert.run({ ...row, created_at: stamp, updated_at: stamp });
-    }
-  });
-  tx(rows);
-}
-
-function seedPersonalExpenses(db) {
-  const count = db.prepare("SELECT COUNT(*) AS total FROM personal_expenses").get().total;
-  if (count > 0) return;
-
-  const insert = db.prepare(`
-    INSERT INTO personal_expenses (
-      due_date, description, category, amount, status, paid_date, notes, created_at, updated_at
-    ) VALUES (
-      @due_date, @description, @category, @amount, @status, @paid_date, @notes, @created_at, @updated_at
-    )
-  `);
-
-  const stamp = nowISO();
-  const rows = [
-    {
-      due_date: "2026-04-15",
-      description: "Conta de Luz",
-      category: "Moradia",
-      amount: 278.45,
-      status: "Pago",
-      paid_date: "2026-04-14",
-      notes: ""
-    },
-    {
-      due_date: "2026-04-18",
-      description: "Internet",
-      category: "Moradia",
-      amount: 129.9,
-      status: "Pendente",
-      paid_date: null,
-      notes: ""
-    },
-    {
-      due_date: "2026-04-22",
-      description: "Mercado",
-      category: "Alimentacao",
-      amount: 530.2,
-      status: "Pago",
-      paid_date: "2026-04-22",
-      notes: ""
-    },
-    {
-      due_date: "2026-04-26",
-      description: "Combustivel",
-      category: "Transporte",
-      amount: 250,
-      status: "Pendente",
-      paid_date: null,
-      notes: ""
-    },
-    {
-      due_date: "2026-03-28",
-      description: "Academia",
-      category: "Lazer",
-      amount: 89.9,
-      status: "Pendente",
-      paid_date: null,
-      notes: "Exemplo de vencida"
-    }
-  ];
-
-  const tx = db.transaction((payload) => {
-    for (const row of payload) {
-      insert.run({ ...row, created_at: stamp, updated_at: stamp });
-    }
-  });
-  tx(rows);
-}
-
-function seedPortfolio(db) {
-  const count = db.prepare("SELECT COUNT(*) AS total FROM portfolio_positions").get().total;
-  if (count > 0) return;
-
-  const insert = db.prepare(`
-    INSERT INTO portfolio_positions (
-      asset_label, asset_type, ticker, quantity, avg_price,
-      application_amount, rate_percent, cdi_annual_rate, application_date,
-      current_unit_price, current_value, last_dividend, updated_at
-    ) VALUES (
-      @asset_label, @asset_type, @ticker, @quantity, @avg_price,
-      @application_amount, @rate_percent, @cdi_annual_rate, @application_date,
-      @current_unit_price, @current_value, @last_dividend, @updated_at
-    )
-  `);
-
-  const stamp = nowISO();
-
-  const stockRows = [
-    { asset_label: "MXRF11", asset_type: "FII", ticker: "MXRF11", quantity: 820, avg_price: 9.8, current_unit_price: 9.8, last_dividend: 0.1 },
-    { asset_label: "BTLG11", asset_type: "FII", ticker: "BTLG11", quantity: 42, avg_price: 98.75, current_unit_price: 101.3, last_dividend: 0.76 },
-    { asset_label: "BBAS3", asset_type: "ACAO", ticker: "BBAS3", quantity: 110, avg_price: 26.4, current_unit_price: 29.2, last_dividend: 0.44 },
-    { asset_label: "TAEE4", asset_type: "ACAO", ticker: "TAEE4", quantity: 95, avg_price: 34.1, current_unit_price: 35.45, last_dividend: 0.69 },
-    { asset_label: "CXSE3", asset_type: "ACAO", ticker: "CXSE3", quantity: 210, avg_price: 12.8, current_unit_price: 13.05, last_dividend: 0.08 },
-    { asset_label: "CMIG4", asset_type: "ACAO", ticker: "CMIG4", quantity: 160, avg_price: 11.75, current_unit_price: 12.31, last_dividend: 0.17 }
-  ].map((row) => ({
-    ...row,
-    application_amount: 0,
-    rate_percent: 0,
-    cdi_annual_rate: 13.65,
-    application_date: null,
-    current_value: row.current_unit_price,
-    updated_at: stamp
-  }));
-
-  const cdbPrincipal = 12000;
-  const cdbRate = 110;
-  const cdbAnnual = 13.65;
-  const cdbDate = "2026-02-10";
-
-  const cdbRow = {
-    asset_label: "CDB Banco Inter",
-    asset_type: "CDB",
-    ticker: null,
-    quantity: 0,
-    avg_price: 0,
-    application_amount: cdbPrincipal,
-    rate_percent: cdbRate,
-    cdi_annual_rate: cdbAnnual,
-    application_date: cdbDate,
-    current_unit_price: 0,
-    current_value: calculateCdbProRata(cdbPrincipal, cdbRate, cdbAnnual, cdbDate),
-    last_dividend: 0,
-    updated_at: stamp
-  };
-
-  const tx = db.transaction((payload) => {
-    for (const row of payload) {
-      insert.run(row);
-    }
-  });
-  tx([...stockRows, cdbRow]);
 }
 
 function getBusinessEntries(db) {
@@ -450,10 +227,7 @@ function upsertBusinessEntry(db, row) {
     id: row.id ? Number(row.id) : null,
     entry_date: row.entry_date,
     description: row.description || "",
-    entry_type:
-      row.entry_type === "Saída" || row.entry_type === "Saida" || row.entry_type === "SAIDA"
-        ? "Saída"
-        : "Entrada",
+    entry_type: String(row.entry_type || "").toLowerCase().startsWith("s") ? "Saida" : "Entrada",
     category: row.category || "Outros",
     amount: Number(row.amount) || 0,
     notes: row.notes || ""
@@ -532,10 +306,7 @@ function getPendingExpensesDueBetween(db, startIso, endIso) {
 
 function upsertPersonalExpense(db, row) {
   const stamp = nowISO();
-  const status =
-    row.status === "Pago" || row.status === "PAGO"
-      ? "Pago"
-      : "Pendente";
+  const status = row.status === "Pago" || row.status === "PAGO" ? "Pago" : "Pendente";
   const dueDate = row.due_date || todayISO();
 
   const payload = {
@@ -656,6 +427,27 @@ function upsertPortfolioPosition(db, row) {
   `).get(payload.id);
 }
 
+function deleteBusinessEntry(db, id) {
+  const parsed = Number(id);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  const result = db.prepare("DELETE FROM business_entries WHERE id = ?").run(parsed);
+  return result.changes > 0;
+}
+
+function deletePersonalExpense(db, id) {
+  const parsed = Number(id);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  const result = db.prepare("DELETE FROM personal_expenses WHERE id = ?").run(parsed);
+  return result.changes > 0;
+}
+
+function deletePortfolioPosition(db, id) {
+  const parsed = Number(id);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  const result = db.prepare("DELETE FROM portfolio_positions WHERE id = ?").run(parsed);
+  return result.changes > 0;
+}
+
 function updatePortfolioLiveValues(db, update) {
   const payload = {
     id: Number(update.id),
@@ -702,5 +494,8 @@ module.exports = {
   addPersonalIncome,
   upsertPersonalExpense,
   upsertPortfolioPosition,
+  deleteBusinessEntry,
+  deletePersonalExpense,
+  deletePortfolioPosition,
   updatePortfolioLiveValues
 };

@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, ipcMain, Notification } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, Notification, shell } = require("electron");
 const YahooFinance = require("yahoo-finance2").default;
 const {
   initDatabase,
@@ -19,19 +19,28 @@ const {
   addPersonalIncome,
   upsertPersonalExpense,
   upsertPortfolioPosition,
+  deleteBusinessEntry,
+  deletePersonalExpense,
+  deletePortfolioPosition,
   updatePortfolioLiveValues
 } = require("./database");
 
 const POLLING_INTERVAL_MS = 3 * 60 * 1000;
 const BILL_NOTIFICATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MAX_AUTO_BACKUPS = 300;
+const UPDATE_REPO_OWNER = process.env.FINANCA_UPDATE_OWNER || "Thiago-DD";
+const UPDATE_REPO_NAME = process.env.FINANCA_UPDATE_REPO || "Financa";
+const UPDATE_ASSET_NAME = process.env.FINANCA_UPDATE_ASSET || "FinanceiroPessoal-Setup.exe";
 
 let db = null;
 let mainWindow = null;
 let pollTimer = null;
 let billNotifyTimer = null;
+let updateTimer = null;
 let backupsDirPath = "";
 let backupQueue = Promise.resolve();
+let lastUpdateTagNotified = null;
 
 const yahooFinance = new YahooFinance();
 
@@ -62,6 +71,107 @@ function dayLabel(targetIso, todayIso, tomorrowIso) {
   if (targetIso === todayIso) return "hoje";
   if (targetIso === tomorrowIso) return "amanha";
   return `em ${targetIso.split("-").reverse().join("/")}`;
+}
+
+function normalizeSemver(value) {
+  const match = String(value || "").trim().match(/v?(\d+)\.(\d+)\.(\d+)/i);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(a, b) {
+  const va = normalizeSemver(a);
+  const vb = normalizeSemver(b);
+  if (!va || !vb) return 0;
+
+  for (let i = 0; i < 3; i += 1) {
+    if (va[i] > vb[i]) return 1;
+    if (va[i] < vb[i]) return -1;
+  }
+
+  return 0;
+}
+
+function resolveReleaseDownloadUrl(release) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const preferred = assets.find((item) => item?.name === UPDATE_ASSET_NAME);
+  if (preferred?.browser_download_url) return preferred.browser_download_url;
+  return release?.html_url || "";
+}
+
+async function checkForRepositoryUpdate() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const endpoint = `https://api.github.com/repos/${UPDATE_REPO_OWNER}/${UPDATE_REPO_NAME}/releases/latest`;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "FinancaDesktopUpdater"
+  };
+
+  const token = process.env.FINANCA_GH_TOKEN || process.env.GH_TOKEN;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  try {
+    const response = await fetch(endpoint, { headers, cache: "no-store" });
+
+    if (response.status === 404) {
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`GitHub update check falhou com status ${response.status}`);
+    }
+
+    const release = await response.json();
+    const latestTag = String(release?.tag_name || "").trim();
+    if (!latestTag) return;
+
+    const latestVersion = latestTag.replace(/^v/i, "");
+    const currentVersion = app.getVersion();
+    const isNewer = compareSemver(latestVersion, currentVersion) > 0;
+
+    if (!isNewer) return;
+
+    if (lastUpdateTagNotified === latestTag) return;
+    lastUpdateTagNotified = latestTag;
+
+    const payload = {
+      tag: latestTag,
+      version: latestVersion,
+      currentVersion,
+      releaseUrl: release?.html_url || "",
+      downloadUrl: resolveReleaseDownloadUrl(release)
+    };
+
+    mainWindow.webContents.send("app:updateAvailable", payload);
+
+    if (Notification.isSupported()) {
+      new Notification({
+        title: "Atualizacao disponivel",
+        body: `Nova versao ${latestVersion} encontrada. Abra o app para atualizar.`,
+        timeoutType: "default"
+      }).show();
+    }
+
+  } catch (error) {
+    console.error("[Updater] erro ao verificar atualizacao:", error.message);
+  }
+}
+
+function startUpdateScheduler() {
+  if (updateTimer) clearInterval(updateTimer);
+
+  checkForRepositoryUpdate().catch((error) => {
+    console.error("[Updater inicial] erro:", error.message);
+  });
+
+  updateTimer = setInterval(() => {
+    checkForRepositoryUpdate().catch((error) => {
+      console.error("[Updater interval] erro:", error.message);
+    });
+  }, UPDATE_CHECK_INTERVAL_MS);
 }
 
 function safeBackupReason(reason) {
@@ -181,6 +291,7 @@ function createMainWindow() {
     minWidth: 1200,
     minHeight: 720,
     backgroundColor: "#090909",
+    autoHideMenuBar: true,
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -188,6 +299,12 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload.js")
     }
   });
+
+  Menu.setApplicationMenu(null);
+  mainWindow.setMenuBarVisibility(false);
+  if (typeof mainWindow.removeMenu === "function") {
+    mainWindow.removeMenu();
+  }
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
   mainWindow.once("ready-to-show", () => mainWindow.show());
@@ -345,10 +462,52 @@ function registerIpcHandlers() {
     return saved;
   });
 
+  ipcMain.handle("db:deleteBusinessEntry", async (_event, id) => {
+    const ok = deleteBusinessEntry(db, id);
+    if (ok) await queueAutoBackupSafe("business-delete");
+    return { ok };
+  });
+
+  ipcMain.handle("db:deletePersonalExpense", async (_event, id) => {
+    const ok = deletePersonalExpense(db, id);
+    if (ok) await queueAutoBackupSafe("personal-delete");
+    return { ok };
+  });
+
+  ipcMain.handle("db:deletePortfolioPosition", async (_event, id) => {
+    const ok = deletePortfolioPosition(db, id);
+    if (ok) await queueAutoBackupSafe("portfolio-delete");
+    return { ok };
+  });
+
   ipcMain.handle("db:setUserSetting", async (_event, payload) => {
     setUserSetting(db, payload.key, payload.value);
     await queueAutoBackupSafe("user-settings");
     return { key: payload.key, value: String(payload.value) };
+  });
+
+  ipcMain.handle("app:checkForUpdatesNow", async () => {
+    await checkForRepositoryUpdate();
+    return { ok: true };
+  });
+
+  ipcMain.handle("app:openExternalLink", async (_event, rawUrl) => {
+    const parsed = String(rawUrl || "").trim();
+    if (!parsed) return { ok: false, reason: "url-vazia" };
+
+    let url;
+    try {
+      url = new URL(parsed);
+    } catch (_error) {
+      return { ok: false, reason: "url-invalida" };
+    }
+
+    if (url.protocol !== "https:") {
+      return { ok: false, reason: "protocolo-nao-permitido" };
+    }
+
+    await shell.openExternal(url.toString());
+    return { ok: true };
   });
 }
 
@@ -364,6 +523,7 @@ app.whenReady()
     createMainWindow();
     startPolling();
     startBillNotificationScheduler();
+    startUpdateScheduler();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -381,6 +541,7 @@ process.on("unhandledRejection", (reason) => {
 app.on("before-quit", () => {
   if (pollTimer) clearInterval(pollTimer);
   if (billNotifyTimer) clearInterval(billNotifyTimer);
+  if (updateTimer) clearInterval(updateTimer);
   if (db) db.close();
 });
 

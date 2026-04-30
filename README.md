@@ -38,7 +38,7 @@ npm run build:win
 ## Estrutura principal
 
 - `main.js`: processo principal do Electron, IPC, polling de cotacoes e notificacoes.
-- `database.js`: criacao de tabelas, seed e funcoes de persistencia.
+- `database.js`: criacao de tabelas e funcoes de persistencia.
 - `preload.js`: bridge segura entre front-end e Electron.
 - `index.html`: layout e tema.
 - `renderer.js`: logica da interface, grids e atualizacoes reativas.

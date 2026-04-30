@@ -13,9 +13,12 @@ const appState = {
   personalIncomes: [],
   personalExpenses: [],
   portfolioRows: [],
+  businessMonthFilter: "",
+  personalMonthFilter: "",
   personalFilter: "none",
   businessCategories: [...DEFAULT_BUSINESS_CATEGORIES],
-  personalCategories: [...DEFAULT_PERSONAL_CATEGORIES]
+  personalCategories: [...DEFAULT_PERSONAL_CATEGORIES],
+  pendingUpdate: null
 };
 
 const gridState = {
@@ -138,13 +141,13 @@ function formatDateBR(value) {
 }
 
 function dbToUiBusinessType(value) {
-  return value === "Saída" || value === "Saida" || value === "SAIDA"
+  return value === "Saida" || value === "SAIDA"
     ? "Saida"
     : "Entrada";
 }
 
 function uiToDbBusinessType(value) {
-  return String(value || "").toLowerCase().startsWith("s") ? "Saída" : "Entrada";
+  return String(value || "").toLowerCase().startsWith("s") ? "Saida" : "Entrada";
 }
 
 function dbToUiStatus(value) {
@@ -248,7 +251,12 @@ function initRefs() {
   refs.sidebar = byId("sidebar");
   refs.sidebarToggle = byId("sidebarToggle");
   refs.themeToggle = byId("themeToggle");
+  refs.checkUpdatesButton = byId("checkUpdatesButton");
   refs.globalSearch = byId("globalSearch");
+  refs.updateBanner = byId("updateBanner");
+  refs.updateText = byId("updateText");
+  refs.openUpdateButton = byId("openUpdateButton");
+  refs.dismissUpdateButton = byId("dismissUpdateButton");
 
   refs.nav = {
     business: byId("navBusiness"),
@@ -265,12 +273,19 @@ function initRefs() {
   refs.topbarBalance = byId("topbarBalance");
 
   refs.addBusinessRow = byId("addBusinessRow");
+  refs.deleteBusinessRow = byId("deleteBusinessRow");
   refs.addPersonalRow = byId("addPersonalRow");
+  refs.deletePersonalRow = byId("deletePersonalRow");
   refs.addPortfolioRow = byId("addPortfolioRow");
+  refs.deletePortfolioRow = byId("deletePortfolioRow");
   refs.businessCategoryInput = byId("businessCategoryInput");
   refs.addBusinessCategoryButton = byId("addBusinessCategoryButton");
+  refs.businessMonthInput = byId("businessMonthInput");
+  refs.businessMonthClear = byId("businessMonthClear");
   refs.personalCategoryInput = byId("personalCategoryInput");
   refs.addPersonalCategoryButton = byId("addPersonalCategoryButton");
+  refs.personalMonthInput = byId("personalMonthInput");
+  refs.personalMonthClear = byId("personalMonthClear");
   refs.addIncomeButton = byId("addIncomeButton");
   refs.incomeAmountInput = byId("incomeAmountInput");
   refs.incomeDescriptionInput = byId("incomeDescriptionInput");
@@ -312,6 +327,31 @@ function updateThemeToggleText() {
   refs.themeToggle.textContent = appState.darkMode ? "Light" : "Dark";
 }
 
+function resolveUpdateUrl(payload) {
+  const downloadUrl = String(payload?.downloadUrl || "").trim();
+  if (downloadUrl) return downloadUrl;
+  return String(payload?.releaseUrl || "").trim();
+}
+
+function hideUpdateBanner() {
+  if (!refs.updateBanner) return;
+  refs.updateBanner.classList.add("hidden");
+}
+
+function showUpdateBanner(payload) {
+  const current = String(payload?.currentVersion || "").trim() || "atual";
+  const latest = String(payload?.version || payload?.tag || "").trim() || "nova";
+  appState.pendingUpdate = payload || null;
+
+  if (refs.updateText) {
+    refs.updateText.textContent = `Atualizacao disponivel: ${current} -> ${latest}`;
+  }
+
+  if (refs.updateBanner) {
+    refs.updateBanner.classList.remove("hidden");
+  }
+}
+
 function applyThemeMode() {
   refs.body.classList.toggle("dark", appState.darkMode);
   refs.body.classList.toggle("theme-dark", appState.darkMode);
@@ -348,24 +388,103 @@ function toggleTheme() {
 function setActiveView(viewKey) {
   appState.activeView = viewKey;
   for (const key of VIEW_KEYS) {
-    refs.views[key].classList.toggle("hidden", key !== viewKey);
-    refs.nav[key].classList.toggle("menu-item-active", key === viewKey);
+    const isActive = key === viewKey;
+    refs.views[key].classList.toggle("hidden", !isActive);
+    refs.nav[key].classList.toggle("menu-item-active", isActive);
+    refs.nav[key].setAttribute("aria-current", isActive ? "page" : "false");
   }
   updateGlobalBalance();
 }
 
+function updateSidebarToggleLabel() {
+  const collapsed = refs.sidebar.classList.contains("sidebar-collapsed");
+  refs.sidebarToggle.textContent = collapsed ? "▶" : "◀";
+}
+
 function toggleSidebar() {
   refs.sidebar.classList.toggle("sidebar-collapsed");
+  updateSidebarToggleLabel();
 }
 
 function setupShellEvents() {
   refs.sidebarToggle.addEventListener("click", toggleSidebar);
   refs.themeToggle.addEventListener("click", toggleTheme);
   refs.globalSearch.addEventListener("input", (event) => applyGlobalSearch(event.target.value));
+  refs.businessMonthInput.addEventListener("change", (event) => {
+    appState.businessMonthFilter = String(event.target.value || "");
+    renderBusinessRows();
+  });
+  refs.businessMonthClear.addEventListener("click", () => {
+    appState.businessMonthFilter = "";
+    refs.businessMonthInput.value = "";
+    renderBusinessRows();
+  });
+  refs.personalMonthInput.addEventListener("change", (event) => {
+    appState.personalMonthFilter = String(event.target.value || "");
+    renderPersonalRows();
+  });
+  refs.personalMonthClear.addEventListener("click", () => {
+    appState.personalMonthFilter = "";
+    refs.personalMonthInput.value = "";
+    renderPersonalRows();
+  });
+
+  refs.checkUpdatesButton.addEventListener("click", async () => {
+    const originalLabel = "Verificar update";
+    refs.checkUpdatesButton.disabled = true;
+    refs.checkUpdatesButton.textContent = "Verificando...";
+
+    try {
+      await window.financeAPI.checkForUpdatesNow();
+      refs.checkUpdatesButton.textContent = appState.pendingUpdate
+        ? "Update encontrado"
+        : "Sem novidades";
+    } catch (error) {
+      console.error("Falha ao verificar update:", error);
+      refs.checkUpdatesButton.textContent = "Falha";
+    } finally {
+      setTimeout(() => {
+        refs.checkUpdatesButton.textContent = originalLabel;
+        refs.checkUpdatesButton.disabled = false;
+      }, 1500);
+    }
+  });
+
+  refs.openUpdateButton.addEventListener("click", async () => {
+    const url = resolveUpdateUrl(appState.pendingUpdate);
+    if (!url) return;
+
+    try {
+      await window.financeAPI.openExternalLink(url);
+    } catch (error) {
+      console.error("Falha ao abrir link de update:", error);
+    }
+  });
+
+  refs.dismissUpdateButton.addEventListener("click", () => {
+    hideUpdateBanner();
+  });
 
   refs.nav.business.addEventListener("click", () => setActiveView("business"));
   refs.nav.personal.addEventListener("click", () => setActiveView("personal"));
   refs.nav.investments.addEventListener("click", () => setActiveView("investments"));
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Delete") return;
+
+    const target = event.target;
+    const tag = String(target?.tagName || "").toLowerCase();
+    const isTypingField = tag === "input" || tag === "textarea" || tag === "select";
+    if (isTypingField) return;
+
+    if (appState.activeView === "business") {
+      deleteFocusedBusinessRow().catch((error) => console.error("Falha ao excluir linha empresarial:", error));
+    } else if (appState.activeView === "personal") {
+      deleteFocusedPersonalRow().catch((error) => console.error("Falha ao excluir linha pessoal:", error));
+    } else if (appState.activeView === "investments") {
+      deleteFocusedPortfolioRow().catch((error) => console.error("Falha ao excluir linha de investimentos:", error));
+    }
+  });
 }
 
 function investmentBaseValue(row) {
@@ -386,6 +505,11 @@ function investmentResultValue(row) {
 
 function isSameMonth(dateIso) {
   return String(dateIso || "").startsWith(currentMonthPrefix());
+}
+
+function matchesMonth(dateIso, monthValue) {
+  if (!monthValue) return true;
+  return String(dateIso || "").startsWith(String(monthValue));
 }
 
 function computeBusinessSummary() {
@@ -492,15 +616,29 @@ function updateGlobalBalance() {
   refs.topbarBalance.textContent = BRL.format(current);
 }
 
+function filteredBusinessRows() {
+  if (!appState.businessMonthFilter) return appState.businessRows;
+  return appState.businessRows.filter((row) => matchesMonth(row.entry_date, appState.businessMonthFilter));
+}
+
+function renderBusinessRows() {
+  if (!gridState.businessApi) return;
+  gridState.businessApi.setGridOption("rowData", filteredBusinessRows());
+}
+
 function filteredPersonalRows() {
   const key = appState.personalFilter;
-  const allRows = appState.personalExpenses;
+  let rows = appState.personalExpenses;
   const today = todayISO();
 
-  if (key === "pending") return allRows.filter((row) => row.status === "Pendente");
-  if (key === "overdue") return allRows.filter((row) => row.status === "Pendente" && row.due_date < today);
-  if (key === "month") return allRows.filter((row) => isSameMonth(row.due_date));
-  return allRows;
+  if (appState.personalMonthFilter) {
+    rows = rows.filter((row) => matchesMonth(row.due_date, appState.personalMonthFilter));
+  }
+
+  if (key === "pending") return rows.filter((row) => row.status === "Pendente");
+  if (key === "overdue") return rows.filter((row) => row.status === "Pendente" && row.due_date < today);
+  if (key === "month") return rows.filter((row) => isSameMonth(row.due_date));
+  return rows;
 }
 
 function renderPersonalRows() {
@@ -583,13 +721,13 @@ function initBusinessGrid() {
       valueFormatter: (params) => BRL.format(toNumber(params.value)),
       cellClassRules: {
         "money-positive": (params) => params.data?.entry_type === "Entrada",
-        "money-negative": (params) => params.data?.entry_type === "Saída"
+        "money-negative": (params) => params.data?.entry_type === "Saida"
       }
     }
   ];
 
   const gridOptions = {
-    rowData: appState.businessRows,
+    rowData: filteredBusinessRows(),
     columnDefs,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
     defaultColDef: {
@@ -616,13 +754,14 @@ function initBusinessGrid() {
         persistCategorySetting("business_categories", appState.businessCategories);
       }
       upsertIntoList(appState.businessRows, changed);
+      renderBusinessRows();
       refreshBusinessCards();
 
       gridState.savingBusiness = true;
       try {
         const saved = normalizeBusinessRow(await window.financeAPI.saveBusinessEntry(changed));
-        params.node.setData(saved);
         upsertIntoList(appState.businessRows, saved);
+        renderBusinessRows();
         refreshBusinessCards();
       } finally {
         gridState.savingBusiness = false;
@@ -881,7 +1020,68 @@ function initPortfolioGrid() {
   gridState.portfolioApi = agGrid.createGrid(byId("portfolioGrid"), gridOptions);
 }
 
+function getFocusedRowData(api) {
+  if (!api) return null;
+  const focused = api.getFocusedCell?.();
+  if (!focused || typeof focused.rowIndex !== "number") return null;
+  const rowNode = api.getDisplayedRowAtIndex(focused.rowIndex);
+  return rowNode?.data || null;
+}
+
+function removeFromListByIdentity(list, row) {
+  const idx = indexByIdentity(list, row);
+  if (idx >= 0) list.splice(idx, 1);
+}
+
+async function deleteFocusedBusinessRow() {
+  const row = getFocusedRowData(gridState.businessApi);
+  if (!row) return;
+
+  if (row.id) {
+    const result = await window.financeAPI.deleteBusinessEntry(row.id);
+    if (!result?.ok) return;
+  }
+
+  removeFromListByIdentity(appState.businessRows, row);
+  renderBusinessRows();
+  refreshBusinessCards();
+}
+
+async function deleteFocusedPersonalRow() {
+  const row = getFocusedRowData(gridState.personalApi);
+  if (!row) return;
+
+  if (row.id) {
+    const result = await window.financeAPI.deletePersonalExpense(row.id);
+    if (!result?.ok) return;
+  }
+
+  removeFromListByIdentity(appState.personalExpenses, row);
+  renderPersonalRows();
+  refreshPersonalCards();
+}
+
+async function deleteFocusedPortfolioRow() {
+  const row = getFocusedRowData(gridState.portfolioApi);
+  if (!row) return;
+
+  if (row.id) {
+    const result = await window.financeAPI.deletePortfolioPosition(row.id);
+    if (!result?.ok) return;
+  }
+
+  removeFromListByIdentity(appState.portfolioRows, row);
+  if (gridState.portfolioApi) {
+    gridState.portfolioApi.setGridOption("rowData", appState.portfolioRows);
+  }
+  refreshInvestmentCards();
+}
+
 function registerAddButtons() {
+  refs.deleteBusinessRow.addEventListener("click", () => {
+    deleteFocusedBusinessRow().catch((error) => console.error("Falha ao excluir linha empresarial:", error));
+  });
+
   refs.addBusinessRow.addEventListener("click", () => {
     const row = normalizeBusinessRow({
       entry_date: todayISO(),
@@ -890,9 +1090,13 @@ function registerAddButtons() {
       category: appState.businessCategories[0] || "Venda Balcao",
       amount: 0
     });
-    gridState.businessApi.applyTransaction({ add: [row], addIndex: 0 });
     upsertIntoList(appState.businessRows, row);
+    renderBusinessRows();
     refreshBusinessCards();
+  });
+
+  refs.deletePersonalRow.addEventListener("click", () => {
+    deleteFocusedPersonalRow().catch((error) => console.error("Falha ao excluir linha pessoal:", error));
   });
 
   refs.addPersonalRow.addEventListener("click", () => {
@@ -906,6 +1110,10 @@ function registerAddButtons() {
     upsertIntoList(appState.personalExpenses, row);
     renderPersonalRows();
     refreshPersonalCards();
+  });
+
+  refs.deletePortfolioRow.addEventListener("click", () => {
+    deleteFocusedPortfolioRow().catch((error) => console.error("Falha ao excluir linha de investimentos:", error));
   });
 
   refs.addPortfolioRow.addEventListener("click", () => {
@@ -1048,6 +1256,7 @@ function applyPortfolioPolling(payload) {
 
 async function bootstrap() {
   initRefs();
+  updateSidebarToggleLabel();
   setupShellEvents();
   setupPersonalFilterEvents();
   applyThemeMode();
@@ -1079,7 +1288,11 @@ async function bootstrap() {
   refreshInvestmentCards();
   setActiveView("business");
 
+  window.financeAPI.onUpdateAvailable((payload) => showUpdateBanner(payload));
   window.financeAPI.onPortfolioUpdated((payload) => applyPortfolioPolling(payload));
+  window.financeAPI.checkForUpdatesNow().catch((error) => {
+    console.error("Falha na verificacao inicial de update:", error);
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
