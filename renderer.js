@@ -15,6 +15,7 @@ const appState = {
   portfolioRows: [],
   businessMonthFilter: "",
   personalMonthFilter: "",
+  investmentMonthFilter: "",
   personalFilter: "none",
   businessCategories: [...DEFAULT_BUSINESS_CATEGORIES],
   personalCategories: [...DEFAULT_PERSONAL_CATEGORIES],
@@ -282,10 +283,15 @@ function initRefs() {
   refs.addBusinessCategoryButton = byId("addBusinessCategoryButton");
   refs.businessMonthInput = byId("businessMonthInput");
   refs.businessMonthClear = byId("businessMonthClear");
+  refs.businessMonthTabs = byId("businessMonthTabs");
   refs.personalCategoryInput = byId("personalCategoryInput");
   refs.addPersonalCategoryButton = byId("addPersonalCategoryButton");
   refs.personalMonthInput = byId("personalMonthInput");
   refs.personalMonthClear = byId("personalMonthClear");
+  refs.personalMonthTabs = byId("personalMonthTabs");
+  refs.investmentMonthInput = byId("investmentMonthInput");
+  refs.investmentMonthClear = byId("investmentMonthClear");
+  refs.investmentMonthTabs = byId("investmentMonthTabs");
   refs.addIncomeButton = byId("addIncomeButton");
   refs.incomeAmountInput = byId("incomeAmountInput");
   refs.incomeDescriptionInput = byId("incomeDescriptionInput");
@@ -428,6 +434,15 @@ function setupShellEvents() {
     refs.personalMonthInput.value = "";
     renderPersonalRows();
   });
+  refs.investmentMonthInput.addEventListener("change", (event) => {
+    appState.investmentMonthFilter = String(event.target.value || "");
+    renderPortfolioRows();
+  });
+  refs.investmentMonthClear.addEventListener("click", () => {
+    appState.investmentMonthFilter = "";
+    refs.investmentMonthInput.value = "";
+    renderPortfolioRows();
+  });
 
   refs.checkUpdatesButton.addEventListener("click", async () => {
     const originalLabel = "Verificar update";
@@ -510,6 +525,48 @@ function isSameMonth(dateIso) {
 function matchesMonth(dateIso, monthValue) {
   if (!monthValue) return true;
   return String(dateIso || "").startsWith(String(monthValue));
+}
+
+function monthLabel(monthValue) {
+  if (!monthValue) return "Todos";
+  const [year, month] = String(monthValue).split("-");
+  return `${month}/${year}`;
+}
+
+function extractMonth(value) {
+  const text = String(value || "");
+  const match = text.match(/^(\d{4}-\d{2})/);
+  return match ? match[1] : "";
+}
+
+function getInvestmentMonthKey(row) {
+  if (!row) return "";
+  if (row.asset_type === "CDB") {
+    return extractMonth(row.application_date || row.updated_at);
+  }
+  return extractMonth(row.updated_at || row.application_date);
+}
+
+function sortMonthsDesc(list) {
+  return [...list].sort((a, b) => b.localeCompare(a));
+}
+
+function renderMonthTabs(container, months, activeValue, onSelect) {
+  if (!container) return;
+  const values = ["", ...sortMonthsDesc(months)];
+  container.innerHTML = "";
+
+  for (const month of values) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "month-tab";
+    if (month === activeValue) {
+      button.classList.add("month-tab-active");
+    }
+    button.textContent = monthLabel(month);
+    button.addEventListener("click", () => onSelect(month));
+    container.appendChild(button);
+  }
 }
 
 function computeBusinessSummary() {
@@ -621,9 +678,31 @@ function filteredBusinessRows() {
   return appState.businessRows.filter((row) => matchesMonth(row.entry_date, appState.businessMonthFilter));
 }
 
+function renderBusinessMonthTabs() {
+  const months = new Set();
+  for (const row of appState.businessRows) {
+    const month = extractMonth(row.entry_date);
+    if (month) months.add(month);
+  }
+  if (appState.businessMonthFilter) {
+    months.add(appState.businessMonthFilter);
+  }
+  renderMonthTabs(
+    refs.businessMonthTabs,
+    Array.from(months),
+    appState.businessMonthFilter,
+    (month) => {
+      appState.businessMonthFilter = month;
+      refs.businessMonthInput.value = month;
+      renderBusinessRows();
+    }
+  );
+}
+
 function renderBusinessRows() {
   if (!gridState.businessApi) return;
   gridState.businessApi.setGridOption("rowData", filteredBusinessRows());
+  renderBusinessMonthTabs();
 }
 
 function filteredPersonalRows() {
@@ -641,9 +720,66 @@ function filteredPersonalRows() {
   return rows;
 }
 
+function renderPersonalMonthTabs() {
+  const months = new Set();
+  for (const row of appState.personalExpenses) {
+    const month = extractMonth(row.due_date);
+    if (month) months.add(month);
+  }
+  if (appState.personalMonthFilter) {
+    months.add(appState.personalMonthFilter);
+  }
+  renderMonthTabs(
+    refs.personalMonthTabs,
+    Array.from(months),
+    appState.personalMonthFilter,
+    (month) => {
+      appState.personalMonthFilter = month;
+      refs.personalMonthInput.value = month;
+      renderPersonalRows();
+    }
+  );
+}
+
 function renderPersonalRows() {
   if (!gridState.personalApi) return;
   gridState.personalApi.setGridOption("rowData", filteredPersonalRows());
+  renderPersonalMonthTabs();
+}
+
+function filteredPortfolioRows() {
+  if (!appState.investmentMonthFilter) return appState.portfolioRows;
+  return appState.portfolioRows.filter((row) => {
+    const month = getInvestmentMonthKey(row);
+    return matchesMonth(month, appState.investmentMonthFilter);
+  });
+}
+
+function renderInvestmentMonthTabs() {
+  const months = new Set();
+  for (const row of appState.portfolioRows) {
+    const month = getInvestmentMonthKey(row);
+    if (month) months.add(month);
+  }
+  if (appState.investmentMonthFilter) {
+    months.add(appState.investmentMonthFilter);
+  }
+  renderMonthTabs(
+    refs.investmentMonthTabs,
+    Array.from(months),
+    appState.investmentMonthFilter,
+    (month) => {
+      appState.investmentMonthFilter = month;
+      refs.investmentMonthInput.value = month;
+      renderPortfolioRows();
+    }
+  );
+}
+
+function renderPortfolioRows() {
+  if (!gridState.portfolioApi) return;
+  gridState.portfolioApi.setGridOption("rowData", filteredPortfolioRows());
+  renderInvestmentMonthTabs();
 }
 
 function updateFilterButtons() {
@@ -983,7 +1119,7 @@ function initPortfolioGrid() {
   ];
 
   const gridOptions = {
-    rowData: appState.portfolioRows,
+    rowData: filteredPortfolioRows(),
     columnDefs,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
     defaultColDef: {
@@ -1003,13 +1139,14 @@ function initPortfolioGrid() {
 
       const changed = normalizePortfolioRow(params.data);
       upsertIntoList(appState.portfolioRows, changed);
+      renderPortfolioRows();
       refreshInvestmentCards();
 
       gridState.savingPortfolio = true;
       try {
-      const saved = normalizePortfolioRow(await window.financeAPI.savePortfolioPosition(changed));
-        params.node.setData(saved);
+        const saved = normalizePortfolioRow(await window.financeAPI.savePortfolioPosition(changed));
         upsertIntoList(appState.portfolioRows, saved);
+        renderPortfolioRows();
         refreshInvestmentCards();
       } finally {
         gridState.savingPortfolio = false;
@@ -1071,9 +1208,7 @@ async function deleteFocusedPortfolioRow() {
   }
 
   removeFromListByIdentity(appState.portfolioRows, row);
-  if (gridState.portfolioApi) {
-    gridState.portfolioApi.setGridOption("rowData", appState.portfolioRows);
-  }
+  renderPortfolioRows();
   refreshInvestmentCards();
 }
 
@@ -1126,8 +1261,8 @@ function registerAddButtons() {
       current_unit_price: 0,
       current_value: 0
     });
-    gridState.portfolioApi.applyTransaction({ add: [row], addIndex: 0 });
     upsertIntoList(appState.portfolioRows, row);
+    renderPortfolioRows();
     refreshInvestmentCards();
   });
 
@@ -1251,6 +1386,7 @@ function applyPortfolioPolling(payload) {
     refs.portfolioUpdatedAt.textContent = new Date(payload.quotedAt).toLocaleString("pt-BR");
   }
 
+  renderPortfolioRows();
   refreshInvestmentCards();
 }
 
@@ -1282,6 +1418,8 @@ async function bootstrap() {
 
   refs.goalInput.value = appState.portfolioGoal;
 
+  renderBusinessRows();
+  renderPortfolioRows();
   setPersonalFilter("none");
   refreshBusinessCards();
   refreshPersonalCards();

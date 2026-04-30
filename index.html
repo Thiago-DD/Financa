@@ -150,6 +150,24 @@
         color: var(--gold) !important;
       }
 
+      .month-tab {
+        border: 1px solid #3f3f46;
+        color: #d4d4d8;
+        border-radius: 0.35rem;
+        padding: 0.25rem 0.5rem;
+        font-size: 11px;
+        background: transparent;
+      }
+
+      .month-tab:hover {
+        border-color: #71717a;
+      }
+
+      .month-tab-active {
+        border-color: #eab308 !important;
+        color: #eab308 !important;
+      }
+
       .update-banner {
         display: flex;
         align-items: center;
@@ -590,6 +608,8 @@
                 </button>
               </div>
 
+              <div id="businessMonthTabs" class="flex flex-wrap gap-2"></div>
+
               <div class="grid gap-3 md:grid-cols-3">
                 <article class="dashboard-card rounded p-4">
                   <p class="text-xs text-zinc-400">Vendas do Dia</p>
@@ -662,6 +682,8 @@
                   Limpar mes
                 </button>
               </div>
+
+              <div id="personalMonthTabs" class="flex flex-wrap gap-2"></div>
 
               <div class="grid gap-3 md:grid-cols-3">
                 <article class="dashboard-card rounded p-4">
@@ -791,6 +813,24 @@
                   <p id="investResultCard" class="mt-1 font-mono text-xl">R$ 0,00</p>
                 </article>
               </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <label for="investmentMonthInput" class="text-xs text-zinc-400">Mes de referencia</label>
+                <input
+                  id="investmentMonthInput"
+                  type="month"
+                  class="h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
+                />
+                <button
+                  id="investmentMonthClear"
+                  type="button"
+                  class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
+                >
+                  Limpar mes
+                </button>
+              </div>
+
+              <div id="investmentMonthTabs" class="flex flex-wrap gap-2"></div>
 
               <div class="flex items-center justify-between gap-2">
                 <p class="text-xs text-zinc-500">Tabela unificada: Acoes, FIIs e CDB</p>
