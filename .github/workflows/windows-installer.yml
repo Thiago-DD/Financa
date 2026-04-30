@@ -27,6 +27,8 @@ jobs:
         run: npm ci
 
       - name: Build installer
+        id: build_installer
+        continue-on-error: true
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         shell: cmd
@@ -34,11 +36,14 @@ jobs:
           npm run build:github > build.log 2>&1
           set EXIT_CODE=%ERRORLEVEL%
           type build.log
-          if exist dist\FinanceiroPessoal-Setup.exe (
-            if not "%EXIT_CODE%"=="0" echo Build retornou %EXIT_CODE% mas o instalador foi gerado. Continuando para publicar release.
-            exit /b 0
-          )
           exit /b %EXIT_CODE%
+
+      - name: Validate installer output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist/FinanceiroPessoal-Setup.exe")) {
+            throw "Instalador nao gerado em dist/FinanceiroPessoal-Setup.exe"
+          }
 
       - name: Upload build log (always)
         if: always()
