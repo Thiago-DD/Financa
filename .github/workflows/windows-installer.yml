@@ -45,6 +45,36 @@ jobs:
             throw "Instalador nao gerado em dist/FinanceiroPessoal-Setup.exe"
           }
 
+      - name: Ensure latest.yml metadata
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist/latest.yml")) {
+            $exePath = (Resolve-Path "dist/FinanceiroPessoal-Setup.exe").Path
+            $shaBytes = [System.Security.Cryptography.SHA512]::Create().ComputeHash([System.IO.File]::ReadAllBytes($exePath))
+            $sha = [Convert]::ToBase64String($shaBytes)
+            $size = (Get-Item $exePath).Length
+            $pkg = Get-Content "package.json" -Raw | ConvertFrom-Json
+            $version = [string]$pkg.version
+            $releaseDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+
+            $content = @(
+              "version: $version"
+              "files:"
+              "  - url: FinanceiroPessoal-Setup.exe"
+              "    sha512: $sha"
+              "    size: $size"
+              "path: FinanceiroPessoal-Setup.exe"
+              "sha512: $sha"
+              "releaseDate: '$releaseDate'"
+            ) -join "`n"
+
+            Set-Content -Path "dist/latest.yml" -Value $content -Encoding utf8
+          }
+
+          if (!(Test-Path "dist/latest.yml")) {
+            throw "Arquivo de metadata latest.yml nao foi gerado em dist/latest.yml"
+          }
+
       - name: Upload build log (always)
         if: always()
         uses: actions/upload-artifact@v4

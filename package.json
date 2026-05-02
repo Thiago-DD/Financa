@@ -1,6 +1,6 @@
 {
   "name": "financeiro-spreadsheet-desktop",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Sistema de gestao financeira local com Electron, SQLite e DataGrid estilo planilha.",
   "main": "main.js",
   "scripts": {
