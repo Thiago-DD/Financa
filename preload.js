@@ -12,12 +12,18 @@ contextBridge.exposeInMainWorld("financeAPI", {
   deletePortfolioPosition: (id) => ipcRenderer.invoke("db:deletePortfolioPosition", id),
   setUserSetting: (key, value) => ipcRenderer.invoke("db:setUserSetting", { key, value }),
   checkForUpdatesNow: () => ipcRenderer.invoke("app:checkForUpdatesNow"),
+  installDownloadedUpdateNow: () => ipcRenderer.invoke("app:installDownloadedUpdateNow"),
   getBillAlerts: () => ipcRenderer.invoke("app:getBillAlerts"),
   openExternalLink: (url) => ipcRenderer.invoke("app:openExternalLink", url),
   onUpdateAvailable: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("app:updateAvailable", listener);
     return () => ipcRenderer.removeListener("app:updateAvailable", listener);
+  },
+  onUpdateState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("app:updateState", listener);
+    return () => ipcRenderer.removeListener("app:updateState", listener);
   },
   onPortfolioUpdated: (callback) => {
     const listener = (_event, payload) => callback(payload);
@@ -28,5 +34,10 @@ contextBridge.exposeInMainWorld("financeAPI", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("app:billAlerts", listener);
     return () => ipcRenderer.removeListener("app:billAlerts", listener);
+  },
+  onRecurringRowsGenerated: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("app:recurringRowsGenerated", listener);
+    return () => ipcRenderer.removeListener("app:recurringRowsGenerated", listener);
   }
 });

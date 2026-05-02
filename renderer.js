@@ -7,6 +7,7 @@ const DEFAULT_PERSONAL_CATEGORIES = ["Moradia", "Alimentacao", "Transporte", "La
 const DELETE_SELECTOR_COL_ID = "__delete_selector__";
 const PIE_COLORS_INCOME = ["#22c55e", "#16a34a", "#4ade80", "#65a30d", "#10b981", "#84cc16"];
 const PIE_COLORS_EXPENSE = ["#ef4444", "#dc2626", "#f97316", "#fb7185", "#b91c1c", "#ea580c"];
+const MONTH_NAMES_SHORT_PTBR = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 
 const appState = {
   activeView: "business",
@@ -19,6 +20,9 @@ const appState = {
   businessMonthFilter: "",
   personalMonthFilter: "",
   investmentMonthFilter: "",
+  businessSortMode: "date_desc",
+  personalSortMode: "due_asc",
+  investmentSortMode: "result_desc",
   personalFilter: "none",
   businessCategories: [...DEFAULT_BUSINESS_CATEGORIES],
   personalCategories: [...DEFAULT_PERSONAL_CATEGORIES],
@@ -26,6 +30,8 @@ const appState = {
   personalDeleteMode: false,
   investmentDeleteMode: false,
   pendingUpdate: null,
+  updateStatus: "idle",
+  updateProgressPercent: 0,
   riskBannerDismissed: false,
   notifications: [],
   notificationsOpen: false,
@@ -237,15 +243,37 @@ function currentMonthPrefix() {
 function parseMonthFromInput(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+
   const monthMatch = text.match(/^(\d{4}-\d{2})$/);
   if (monthMatch) return monthMatch[1];
+
   const dateMatch = text.match(/^(\d{4}-\d{2})-\d{2}$/);
-  return dateMatch ? dateMatch[1] : "";
+  if (dateMatch) return dateMatch[1];
+
+  const brDateMatch = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (brDateMatch) {
+    const month = Number(brDateMatch[2]);
+    const year = Number(brDateMatch[3]);
+    if (Number.isFinite(month) && Number.isFinite(year) && month >= 1 && month <= 12) {
+      return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
+    }
+  }
+
+  const brMonthMatch = text.match(/^(\d{1,2})\/(\d{4})$/);
+  if (brMonthMatch) {
+    const month = Number(brMonthMatch[1]);
+    const year = Number(brMonthMatch[2]);
+    if (Number.isFinite(month) && Number.isFinite(year) && month >= 1 && month <= 12) {
+      return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`;
+    }
+  }
+
+  return "";
 }
 
 function monthToDateInputValue(monthValue) {
   const month = extractMonth(monthValue);
-  return month ? `${month}-01` : "";
+  return month || "";
 }
 
 function sanitizeCategory(value) {
@@ -331,10 +359,20 @@ function formatDateBR(value) {
   return new Intl.DateTimeFormat("pt-BR").format(date);
 }
 
+function normalizeBusinessTypeToken(value) {
+  return String(value || "")
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
 function dbToUiBusinessType(value) {
-  return value === "Saida" || value === "SAIDA"
-    ? "Saida"
-    : "Entrada";
+  const token = normalizeBusinessTypeToken(value);
+  if (token.includes("entrada")) return "Entrada";
+  if (token.startsWith("s") || token.includes("saida") || token.includes("sada")) return "Saida";
+  return "Entrada";
 }
 
 function uiToDbBusinessType(value) {
@@ -347,6 +385,17 @@ function dbToUiStatus(value) {
 
 function uiToDbStatus(value) {
   return String(value || "").toLowerCase().startsWith("pago") ? "Pago" : "Pendente";
+}
+
+function dbToUiRecurring(value) {
+  return Number(value) > 0 ? "Sim" : "Nao";
+}
+
+function uiToDbRecurring(value) {
+  if (Number(value) > 0) return 1;
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return 0;
+  return text.startsWith("s") || text === "true" ? 1 : 0;
 }
 
 function dbToUiAssetType(value) {
@@ -372,6 +421,7 @@ function normalizeBusinessRow(row) {
   return ensureTempId({
     id: row.id ?? null,
     __tmpId: row.__tmpId || null,
+    __isNew: Boolean(row.__isNew),
     entry_date: entryDate,
     description: row.description || "",
     entry_type: uiToDbBusinessType(row.entry_type),
@@ -380,6 +430,10 @@ function normalizeBusinessRow(row) {
     installment_total: installmentTotal,
     installment_index: installmentIndex,
     installment_group_id: row.installment_group_id || null,
+    is_recurring: installmentTotal > 1 ? 0 : uiToDbRecurring(row.is_recurring),
+    recurrence_interval_months: installmentTotal > 1
+      ? 1
+      : toInstallmentTotal(row.recurrence_interval_months || 1),
     notes: row.notes || ""
   });
 }
@@ -399,6 +453,7 @@ function normalizePersonalExpenseRow(row) {
   return ensureTempId({
     id: row.id ?? null,
     __tmpId: row.__tmpId || null,
+    __isNew: Boolean(row.__isNew),
     due_date: dueDate,
     description: row.description || "",
     category: row.category || "Moradia",
@@ -408,6 +463,10 @@ function normalizePersonalExpenseRow(row) {
     installment_total: installmentTotal,
     installment_index: installmentIndex,
     installment_group_id: row.installment_group_id || null,
+    is_recurring: installmentTotal > 1 ? 0 : uiToDbRecurring(row.is_recurring),
+    recurrence_interval_months: installmentTotal > 1
+      ? 1
+      : toInstallmentTotal(row.recurrence_interval_months || 1),
     notes: row.notes || ""
   });
 }
@@ -425,13 +484,13 @@ function normalizePersonalIncomeRow(row) {
 
 function normalizePortfolioRow(row) {
   const type = uiToDbAssetType(row.asset_type);
-  const applicationDate = type === "CDB"
-    ? normalizeIsoDate(row.application_date, todayISO(), row.application_date || todayISO())
-    : null;
+  const rawApplicationDate = row.application_date || row.updated_at || todayISO();
+  const applicationDate = normalizeIsoDate(rawApplicationDate, todayISO(), rawApplicationDate);
 
   const clean = ensureTempId({
     id: row.id ?? null,
     __tmpId: row.__tmpId || null,
+    __isNew: Boolean(row.__isNew),
     asset_label: row.asset_label || "",
     asset_type: type,
     ticker: row.ticker ? String(row.ticker).toUpperCase() : "",
@@ -509,19 +568,28 @@ function initRefs() {
   refs.deletePersonalRow = byId("deletePersonalRow");
   refs.addPortfolioRow = byId("addPortfolioRow");
   refs.deletePortfolioRow = byId("deletePortfolioRow");
+  refs.businessSortMode = byId("businessSortMode");
+  refs.personalSortMode = byId("personalSortMode");
+  refs.investmentSortMode = byId("investmentSortMode");
   refs.businessCategoryInput = byId("businessCategoryInput");
   refs.addBusinessCategoryButton = byId("addBusinessCategoryButton");
   refs.businessMonthInput = byId("businessMonthInput");
   refs.businessMonthClear = byId("businessMonthClear");
   refs.businessMonthTabs = byId("businessMonthTabs");
+  refs.businessPrevMonth = byId("businessPrevMonth");
+  refs.businessNextMonth = byId("businessNextMonth");
   refs.personalCategoryInput = byId("personalCategoryInput");
   refs.addPersonalCategoryButton = byId("addPersonalCategoryButton");
   refs.personalMonthInput = byId("personalMonthInput");
   refs.personalMonthClear = byId("personalMonthClear");
   refs.personalMonthTabs = byId("personalMonthTabs");
+  refs.personalPrevMonth = byId("personalPrevMonth");
+  refs.personalNextMonth = byId("personalNextMonth");
   refs.investmentMonthInput = byId("investmentMonthInput");
   refs.investmentMonthClear = byId("investmentMonthClear");
   refs.investmentMonthTabs = byId("investmentMonthTabs");
+  refs.investmentPrevMonth = byId("investmentPrevMonth");
+  refs.investmentNextMonth = byId("investmentNextMonth");
   refs.addIncomeButton = byId("addIncomeButton");
   refs.incomeAmountInput = byId("incomeAmountInput");
   refs.incomeDescriptionInput = byId("incomeDescriptionInput");
@@ -662,7 +730,17 @@ function resolveUpdateUrl(payload) {
   return String(payload?.releaseUrl || "").trim();
 }
 
+function setUpdateActionButton(label, disabled = false) {
+  if (!refs.openUpdateButton) return;
+  refs.openUpdateButton.textContent = label;
+  refs.openUpdateButton.disabled = Boolean(disabled);
+  refs.openUpdateButton.classList.toggle("opacity-60", Boolean(disabled));
+  refs.openUpdateButton.classList.toggle("cursor-not-allowed", Boolean(disabled));
+}
+
 function hideUpdateBanner() {
+  appState.updateStatus = "idle";
+  appState.updateProgressPercent = 0;
   if (!refs.updateBanner) return;
   refs.updateBanner.classList.add("hidden");
 }
@@ -740,28 +818,90 @@ function pushNotification(title, text, dedupeKey = "") {
   renderNotificationCenter();
 }
 
-function showUpdateBanner(payload) {
+function applyUpdateState(payload) {
+  const status = String(payload?.status || "").trim() || "available";
   const current = String(payload?.currentVersion || "").trim() || "atual";
   const latest = String(payload?.version || payload?.tag || "").trim() || "nova";
-  appState.pendingUpdate = payload || null;
+  const autoEnabled = Boolean(payload?.autoUpdateEnabled);
+  const downloaded = Boolean(payload?.downloaded);
+  const canAutoInstall = Boolean(payload?.canAutoInstall);
+  const progress = Number(payload?.progressPercent || 0);
 
-  if (refs.updateText) {
-    refs.updateText.textContent = `Atualizacao disponivel: ${current} -> ${latest}`;
+  appState.updateStatus = status;
+  if (Number.isFinite(progress) && progress > 0) {
+    appState.updateProgressPercent = Math.max(0, Math.min(100, progress));
   }
 
-  if (refs.updateBanner) {
-    refs.updateBanner.classList.remove("hidden");
+  if (status === "not-available") {
+    appState.pendingUpdate = null;
+    hideUpdateBanner();
+    return;
+  }
+
+  if (status === "error") {
+    if (refs.updateText) {
+      refs.updateText.textContent = `Falha no update: ${String(payload?.message || "erro desconhecido")}`;
+    }
+    if (refs.updateBanner) {
+      refs.updateBanner.classList.remove("hidden");
+    }
+    setUpdateActionButton("Abrir release", false);
+    return;
+  }
+
+  if (status === "checking") {
+    if (refs.updateText) {
+      refs.updateText.textContent = "Verificando atualizacao...";
+    }
+    if (refs.updateBanner) refs.updateBanner.classList.remove("hidden");
+    setUpdateActionButton("Aguarde...", true);
+    return;
+  }
+
+  if (status === "downloading") {
+    appState.pendingUpdate = { ...(appState.pendingUpdate || {}), ...payload };
+    if (refs.updateText) {
+      refs.updateText.textContent = `Baixando update ${latest}: ${appState.updateProgressPercent.toFixed(1)}%`;
+    }
+    if (refs.updateBanner) refs.updateBanner.classList.remove("hidden");
+    setUpdateActionButton("Baixando...", true);
+    return;
+  }
+
+  appState.pendingUpdate = payload || null;
+  if (refs.updateBanner) refs.updateBanner.classList.remove("hidden");
+
+  if (downloaded && canAutoInstall) {
+    if (refs.updateText) {
+      refs.updateText.textContent = `Update pronto: ${current} -> ${latest}. Reinicie para instalar.`;
+    }
+    setUpdateActionButton("Reiniciar e instalar", false);
+  } else if (autoEnabled) {
+    if (refs.updateText) {
+      refs.updateText.textContent = `Atualizacao disponivel: ${current} -> ${latest}. Download automatico iniciado.`;
+    }
+    setUpdateActionButton("Baixando...", true);
+  } else {
+    if (refs.updateText) {
+      refs.updateText.textContent = `Atualizacao disponivel: ${current} -> ${latest}`;
+    }
+    setUpdateActionButton("Baixar update", false);
   }
 
   const updateKey = String(payload?.tag || payload?.version || "").trim();
   if (updateKey && appState.lastUpdateNotificationKey !== updateKey) {
     appState.lastUpdateNotificationKey = updateKey;
-    pushNotification(
-      "Atualizacao disponivel",
-      `Nova versao ${latest} detectada. Clique em Atualizar para baixar.`,
-      `update:${updateKey}`
-    );
+    const notifMessage = downloaded && canAutoInstall
+      ? `Nova versao ${latest} pronta para instalar.`
+      : autoEnabled
+        ? `Nova versao ${latest} detectada. Download automatico iniciado.`
+        : `Nova versao ${latest} detectada. Clique em Atualizar para baixar.`;
+    pushNotification("Atualizacao disponivel", notifMessage, `update:${updateKey}`);
   }
+}
+
+function showUpdateBanner(payload) {
+  applyUpdateState(payload);
 }
 
 function hideRiskBanner() {
@@ -890,23 +1030,57 @@ function setupShellEvents() {
   refs.sidebarToggle.addEventListener("click", toggleSidebar);
   refs.themeToggle.addEventListener("click", toggleTheme);
   refs.globalSearch.addEventListener("input", (event) => applyGlobalSearch(event.target.value));
-  refs.businessMonthInput.addEventListener("change", (event) => {
-    setBusinessMonthFilter(parseMonthFromInput(event.target.value));
-  });
+  const bindMonthInput = (inputEl, applyFilter) => {
+    if (!inputEl || typeof applyFilter !== "function") return;
+    const handle = () => {
+      const rawValue = String(inputEl.value || "");
+      const parsedMonth = parseMonthFromInput(rawValue);
+      applyFilter(parsedMonth, { inputMonth: parsedMonth });
+    };
+
+    // Mantem leitura consistente para input type="month" e fallback text.
+    inputEl.addEventListener("change", handle);
+    inputEl.addEventListener("input", handle);
+    inputEl.addEventListener("blur", handle);
+  };
+
+  bindMonthInput(refs.businessMonthInput, setBusinessMonthFilter);
   refs.businessMonthClear.addEventListener("click", () => {
     setBusinessMonthFilter("");
   });
-  refs.personalMonthInput.addEventListener("change", (event) => {
-    setPersonalMonthFilter(parseMonthFromInput(event.target.value));
+  refs.businessPrevMonth.addEventListener("click", () => {
+    const next = shiftMonthValue(appState.businessMonthFilter, -1);
+    setBusinessMonthFilter(next, { inputMonth: next });
   });
+  refs.businessNextMonth.addEventListener("click", () => {
+    const next = shiftMonthValue(appState.businessMonthFilter, 1);
+    setBusinessMonthFilter(next, { inputMonth: next });
+  });
+
+  bindMonthInput(refs.personalMonthInput, setPersonalMonthFilter);
   refs.personalMonthClear.addEventListener("click", () => {
     setPersonalMonthFilter("");
   });
-  refs.investmentMonthInput.addEventListener("change", (event) => {
-    setInvestmentMonthFilter(parseMonthFromInput(event.target.value));
+  refs.personalPrevMonth.addEventListener("click", () => {
+    const next = shiftMonthValue(appState.personalMonthFilter, -1);
+    setPersonalMonthFilter(next, { inputMonth: next });
   });
+  refs.personalNextMonth.addEventListener("click", () => {
+    const next = shiftMonthValue(appState.personalMonthFilter, 1);
+    setPersonalMonthFilter(next, { inputMonth: next });
+  });
+
+  bindMonthInput(refs.investmentMonthInput, setInvestmentMonthFilter);
   refs.investmentMonthClear.addEventListener("click", () => {
     setInvestmentMonthFilter("");
+  });
+  refs.investmentPrevMonth.addEventListener("click", () => {
+    const next = shiftMonthValue(appState.investmentMonthFilter, -1);
+    setInvestmentMonthFilter(next, { inputMonth: next });
+  });
+  refs.investmentNextMonth.addEventListener("click", () => {
+    const next = shiftMonthValue(appState.investmentMonthFilter, 1);
+    setInvestmentMonthFilter(next, { inputMonth: next });
   });
 
   refs.checkUpdatesButton.addEventListener("click", async () => {
@@ -915,10 +1089,12 @@ function setupShellEvents() {
     refs.checkUpdatesButton.textContent = "Verificando...";
 
     try {
-      await window.financeAPI.checkForUpdatesNow();
-      refs.checkUpdatesButton.textContent = appState.pendingUpdate
-        ? "Update encontrado"
-        : "Sem novidades";
+      const result = await window.financeAPI.checkForUpdatesNow();
+      if (result?.autoUpdateEnabled === false) {
+        refs.checkUpdatesButton.textContent = "Modo manual";
+      } else {
+        refs.checkUpdatesButton.textContent = "Verificando...";
+      }
     } catch (error) {
       console.error("Falha ao verificar update:", error);
       refs.checkUpdatesButton.textContent = "Falha";
@@ -926,12 +1102,34 @@ function setupShellEvents() {
       setTimeout(() => {
         refs.checkUpdatesButton.textContent = originalLabel;
         refs.checkUpdatesButton.disabled = false;
-      }, 1500);
+      }, 1800);
     }
   });
 
   refs.openUpdateButton.addEventListener("click", async () => {
-    const url = resolveUpdateUrl(appState.pendingUpdate);
+    const pending = appState.pendingUpdate || {};
+    const shouldInstallNow = appState.updateStatus === "downloaded" &&
+      Boolean(pending.downloaded) &&
+      Boolean(pending.canAutoInstall);
+
+    if (shouldInstallNow) {
+      refs.openUpdateButton.disabled = true;
+      refs.openUpdateButton.textContent = "Reiniciando...";
+      try {
+        const result = await window.financeAPI.installDownloadedUpdateNow();
+        if (!result?.ok) {
+          refs.openUpdateButton.disabled = false;
+          refs.openUpdateButton.textContent = "Instalar update";
+        }
+      } catch (error) {
+        console.error("Falha ao instalar update:", error);
+        refs.openUpdateButton.disabled = false;
+        refs.openUpdateButton.textContent = "Instalar update";
+      }
+      return;
+    }
+
+    const url = resolveUpdateUrl(pending);
     if (!url) return;
 
     try {
@@ -1030,8 +1228,56 @@ function getPersonalExpenseReferenceDate(row) {
 
 function monthLabel(monthValue) {
   if (!monthValue) return "Todos";
-  const [year, month] = String(monthValue).split("-");
-  return `${month}/${year}`;
+  const normalized = extractMonth(monthValue);
+  if (!normalized) return "Todos";
+  const [yearText, monthText] = String(normalized).split("-");
+  const year = Number(yearText);
+  const monthNumber = Number(monthText);
+  if (!Number.isFinite(year) || !Number.isFinite(monthNumber) || monthNumber < 1 || monthNumber > 12) {
+    return String(monthValue);
+  }
+  return `${MONTH_NAMES_SHORT_PTBR[monthNumber - 1]}/${year}`;
+}
+
+function monthChipLabel(monthValue) {
+  return monthValue
+    ? `Referencia: ${monthLabel(monthValue)}`
+    : "Referencia: Todos os meses";
+}
+
+function shiftMonthValue(monthValue, offset) {
+  const base = extractMonth(monthValue) || currentMonthPrefix();
+  const [yearText, monthText] = String(base).split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) {
+    return currentMonthPrefix();
+  }
+
+  const probe = new Date(year, month - 1, 1);
+  probe.setMonth(probe.getMonth() + Number(offset || 0));
+  return `${probe.getFullYear()}-${String(probe.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function defaultIsoDateForMonthFilter(monthFilter) {
+  const month = extractMonth(monthFilter);
+  if (!month) return todayISO();
+
+  const today = todayISO();
+  if (extractMonth(today) === month) return today;
+  return `${month}-01`;
+}
+
+function updateMonthFilterLabels() {
+  if (refs.businessMonthLabel) {
+    refs.businessMonthLabel.textContent = monthChipLabel(appState.businessMonthFilter);
+  }
+  if (refs.personalMonthLabel) {
+    refs.personalMonthLabel.textContent = monthChipLabel(appState.personalMonthFilter);
+  }
+  if (refs.investmentMonthLabel) {
+    refs.investmentMonthLabel.textContent = monthChipLabel(appState.investmentMonthFilter);
+  }
 }
 
 function extractMonth(value) {
@@ -1042,10 +1288,7 @@ function extractMonth(value) {
 
 function getInvestmentMonthKey(row) {
   if (!row) return "";
-  if (row.asset_type === "CDB") {
-    return extractMonth(row.application_date || row.updated_at);
-  }
-  return extractMonth(row.updated_at || row.application_date);
+  return extractMonth(row.application_date || row.updated_at);
 }
 
 function sortMonthsDesc(list) {
@@ -1269,12 +1512,13 @@ function renderPieChart(chartEl, legendEl, totalEl, rows) {
   }
 
   chartEl.style.background = `conic-gradient(${segments.join(", ")})`;
-  const balanceLabel = "Saldo do periodo";
+  const balanceLabel = "Saldo";
   const balanceValue = `${balance >= 0 ? "+" : "-"} ${BRL.format(Math.abs(balance))}`;
   totalEl.innerHTML = `
     <span class="pie-total-label">${escapeHtml(balanceLabel)}</span>
     <span class="pie-total-value">${escapeHtml(balanceValue)}</span>
   `;
+  fitPieTotalValue(totalEl);
 
   legendEl.innerHTML = data
     .map((item) => {
@@ -1289,6 +1533,24 @@ function renderPieChart(chartEl, legendEl, totalEl, rows) {
       `;
     })
     .join("");
+}
+
+function fitPieTotalValue(totalEl) {
+  if (!totalEl) return;
+  const valueEl = totalEl.querySelector(".pie-total-value");
+  if (!valueEl) return;
+
+  const containerWidth = Math.max(42, Math.floor(totalEl.clientWidth * 0.54));
+  let fontSize = 14;
+  const minFontSize = 10;
+
+  valueEl.style.fontSize = `${fontSize}px`;
+  valueEl.style.whiteSpace = "nowrap";
+
+  while (fontSize > minFontSize && valueEl.scrollWidth > containerWidth) {
+    fontSize -= 0.5;
+    valueEl.style.fontSize = `${fontSize}px`;
+  }
 }
 
 function getPreviousMonthKey(monthValue) {
@@ -1557,6 +1819,10 @@ function getPersonalIncomeScopeMonth() {
   return appState.personalMonthFilter || currentMonthPrefix();
 }
 
+function getPersonalReferenceMonth() {
+  return extractMonth(appState.personalMonthFilter) || currentMonthPrefix();
+}
+
 function formatMonthScopeLabel(monthValue) {
   const month = extractMonth(monthValue);
   if (!month) return "Mes atual";
@@ -1624,19 +1890,24 @@ function computeBusinessSummary() {
 
 function computePersonalSummary() {
   const today = todayISO();
+  const scopeMonth = getPersonalReferenceMonth();
   const incomeMonth = appState.personalIncomes
-    .filter((row) => isSameMonth(row.income_date))
+    .filter((row) => matchesMonth(row.income_date, scopeMonth))
     .reduce((acc, row) => acc + toNumber(row.amount), 0);
 
   const expenseMonth = appState.personalExpenses
-    .filter((row) => isSameMonth(getPersonalExpenseReferenceDate(row)))
+    .filter((row) => matchesMonth(getPersonalExpenseReferenceDate(row), scopeMonth))
     .reduce((acc, row) => acc + toNumber(row.amount), 0);
 
-  const openRows = appState.personalExpenses.filter((row) => row.status === "Pendente");
+  const openRows = appState.personalExpenses.filter((row) =>
+    row.status === "Pendente" &&
+    matchesMonth(row.due_date, scopeMonth)
+  );
   const overdueRows = openRows.filter((row) => row.due_date < today);
   const openAmount = openRows.reduce((acc, row) => acc + toNumber(row.amount), 0);
 
   return {
+    scopeMonth,
     incomeMonth,
     expenseMonth,
     openAmount,
@@ -1678,7 +1949,7 @@ function refreshPersonalCards() {
   refs.personalIncomeCard.textContent = BRL.format(summary.incomeMonth);
   refs.personalExpenseCard.textContent = BRL.format(summary.expenseMonth);
   refs.personalOpenCard.textContent = BRL.format(summary.openAmount);
-  refs.personalOpenMeta.textContent = `${summary.openCount} abertas / ${summary.overdueCount} vencidas`;
+  refs.personalOpenMeta.textContent = `${monthLabel(summary.scopeMonth)} - ${summary.openCount} abertas / ${summary.overdueCount} vencidas`;
   refreshPersonalPieChart();
   renderPersonalIncomeList();
   updateGlobalBalance();
@@ -1698,7 +1969,8 @@ function refreshInvestmentCards() {
 
 function updateGlobalBalance() {
   const business = computeBusinessSummary().balance;
-  const personal = computePersonalSummary().incomeMonth - computePersonalSummary().expenseMonth;
+  const personalSummary = computePersonalSummary();
+  const personal = personalSummary.incomeMonth - personalSummary.expenseMonth;
   const investments = computeInvestmentSummary().patrimony;
 
   let current = 0;
@@ -1714,8 +1986,27 @@ function setBusinessMonthFilter(monthValue, options = {}) {
   const normalized = extractMonth(monthValue);
   appState.businessMonthFilter = normalized;
   if (refs.businessMonthInput) {
-    refs.businessMonthInput.value = monthToDateInputValue(normalized);
+    const inputMonth = extractMonth(options.inputMonth || options.inputDate || "");
+    const currentInputMonth = parseMonthFromInput(refs.businessMonthInput.value);
+    const keepInputMonthFromOption =
+      !!inputMonth &&
+      (!normalized || inputMonth === normalized);
+    const keepCurrentInputMonth =
+      !!normalized &&
+      !!currentInputMonth &&
+      currentInputMonth === normalized;
+
+    if (!normalized) {
+      refs.businessMonthInput.value = "";
+    } else if (keepInputMonthFromOption) {
+      refs.businessMonthInput.value = inputMonth;
+    } else if (keepCurrentInputMonth) {
+      refs.businessMonthInput.value = currentInputMonth;
+    } else {
+      refs.businessMonthInput.value = monthToDateInputValue(normalized);
+    }
   }
+  updateMonthFilterLabels();
   if (options.render !== false) renderBusinessRows();
 }
 
@@ -1723,8 +2014,27 @@ function setPersonalMonthFilter(monthValue, options = {}) {
   const normalized = extractMonth(monthValue);
   appState.personalMonthFilter = normalized;
   if (refs.personalMonthInput) {
-    refs.personalMonthInput.value = monthToDateInputValue(normalized);
+    const inputMonth = extractMonth(options.inputMonth || options.inputDate || "");
+    const currentInputMonth = parseMonthFromInput(refs.personalMonthInput.value);
+    const keepInputMonthFromOption =
+      !!inputMonth &&
+      (!normalized || inputMonth === normalized);
+    const keepCurrentInputMonth =
+      !!normalized &&
+      !!currentInputMonth &&
+      currentInputMonth === normalized;
+
+    if (!normalized) {
+      refs.personalMonthInput.value = "";
+    } else if (keepInputMonthFromOption) {
+      refs.personalMonthInput.value = inputMonth;
+    } else if (keepCurrentInputMonth) {
+      refs.personalMonthInput.value = currentInputMonth;
+    } else {
+      refs.personalMonthInput.value = monthToDateInputValue(normalized);
+    }
   }
+  updateMonthFilterLabels();
   if (options.render !== false) renderPersonalRows();
   renderPersonalIncomeList();
 }
@@ -1733,9 +2043,156 @@ function setInvestmentMonthFilter(monthValue, options = {}) {
   const normalized = extractMonth(monthValue);
   appState.investmentMonthFilter = normalized;
   if (refs.investmentMonthInput) {
-    refs.investmentMonthInput.value = monthToDateInputValue(normalized);
+    const inputMonth = extractMonth(options.inputMonth || options.inputDate || "");
+    const currentInputMonth = parseMonthFromInput(refs.investmentMonthInput.value);
+    const keepInputMonthFromOption =
+      !!inputMonth &&
+      (!normalized || inputMonth === normalized);
+    const keepCurrentInputMonth =
+      !!normalized &&
+      !!currentInputMonth &&
+      currentInputMonth === normalized;
+
+    if (!normalized) {
+      refs.investmentMonthInput.value = "";
+    } else if (keepInputMonthFromOption) {
+      refs.investmentMonthInput.value = inputMonth;
+    } else if (keepCurrentInputMonth) {
+      refs.investmentMonthInput.value = currentInputMonth;
+    } else {
+      refs.investmentMonthInput.value = monthToDateInputValue(normalized);
+    }
   }
+  updateMonthFilterLabels();
   if (options.render !== false) renderPortfolioRows();
+}
+
+function compareTextPtBr(a, b) {
+  return String(a || "").localeCompare(String(b || ""), "pt-BR", {
+    sensitivity: "base",
+    ignorePunctuation: true
+  });
+}
+
+function compareNumber(a, b) {
+  const nA = toNumber(a);
+  const nB = toNumber(b);
+  if (nA === nB) return 0;
+  return nA < nB ? -1 : 1;
+}
+
+function compareIsoDate(a, b) {
+  return String(a || "").localeCompare(String(b || ""));
+}
+
+function stableIdentityCompare(a, b) {
+  const idA = Number.isFinite(Number(a?.id)) ? Number(a.id) : Number.MAX_SAFE_INTEGER;
+  const idB = Number.isFinite(Number(b?.id)) ? Number(b.id) : Number.MAX_SAFE_INTEGER;
+  if (idA !== idB) return idA - idB;
+  return compareTextPtBr(a?.__tmpId, b?.__tmpId);
+}
+
+function installmentIndexCompare(a, b) {
+  const idxA = Math.max(1, Number.isFinite(Number(a?.installment_index)) ? Math.floor(Number(a.installment_index)) : 1);
+  const idxB = Math.max(1, Number.isFinite(Number(b?.installment_index)) ? Math.floor(Number(b.installment_index)) : 1);
+  if (idxA !== idxB) return idxA - idxB;
+  return stableIdentityCompare(a, b);
+}
+
+function businessStableCompare(a, b) {
+  const dateCompare = compareIsoDate(a?.entry_date, b?.entry_date);
+  if (dateCompare !== 0) return dateCompare;
+  return installmentIndexCompare(a, b);
+}
+
+function personalStableCompare(a, b) {
+  const dueCompare = compareIsoDate(getPersonalExpenseReferenceDate(a), getPersonalExpenseReferenceDate(b));
+  if (dueCompare !== 0) return dueCompare;
+  return installmentIndexCompare(a, b);
+}
+
+function portfolioStableCompare(a, b) {
+  const monthCompare = compareIsoDate(getInvestmentMonthKey(a), getInvestmentMonthKey(b));
+  if (monthCompare !== 0) return monthCompare;
+  return stableIdentityCompare(a, b);
+}
+
+function sortBusinessRows(rows) {
+  const mode = appState.businessSortMode;
+  return [...rows].sort((a, b) => {
+    let cmp = 0;
+
+    if (mode === "date_desc") cmp = compareIsoDate(b.entry_date, a.entry_date);
+    else if (mode === "date_asc") cmp = compareIsoDate(a.entry_date, b.entry_date);
+    else if (mode === "amount_desc") cmp = compareNumber(b.amount, a.amount);
+    else if (mode === "amount_asc") cmp = compareNumber(a.amount, b.amount);
+    else if (mode === "category_asc") cmp = compareTextPtBr(a.category, b.category);
+    else if (mode === "type_group") cmp = compareTextPtBr(dbToUiBusinessType(a.entry_type), dbToUiBusinessType(b.entry_type));
+
+    if (cmp !== 0) return cmp;
+    return businessStableCompare(a, b);
+  });
+}
+
+function sortPersonalRows(rows) {
+  const mode = appState.personalSortMode;
+  return [...rows].sort((a, b) => {
+    let cmp = 0;
+    if (mode === "due_desc") cmp = compareIsoDate(getPersonalExpenseReferenceDate(b), getPersonalExpenseReferenceDate(a));
+    else if (mode === "due_asc") cmp = compareIsoDate(getPersonalExpenseReferenceDate(a), getPersonalExpenseReferenceDate(b));
+    else if (mode === "amount_desc") cmp = compareNumber(b.amount, a.amount);
+    else if (mode === "amount_asc") cmp = compareNumber(a.amount, b.amount);
+    else if (mode === "category_asc") cmp = compareTextPtBr(a.category, b.category);
+    else if (mode === "status_group") {
+      const statusA = dbToUiStatus(a.status) === "Pendente" ? 0 : 1;
+      const statusB = dbToUiStatus(b.status) === "Pendente" ? 0 : 1;
+      cmp = statusA - statusB;
+    }
+
+    if (cmp !== 0) return cmp;
+    return personalStableCompare(a, b);
+  });
+}
+
+function sortPortfolioRows(rows) {
+  const mode = appState.investmentSortMode;
+  return [...rows].sort((a, b) => {
+    let cmp = 0;
+
+    if (mode === "result_desc") cmp = compareNumber(investmentResultValue(b), investmentResultValue(a));
+    else if (mode === "result_asc") cmp = compareNumber(investmentResultValue(a), investmentResultValue(b));
+    else if (mode === "market_desc") cmp = compareNumber(investmentMarketValue(b), investmentMarketValue(a));
+    else if (mode === "market_asc") cmp = compareNumber(investmentMarketValue(a), investmentMarketValue(b));
+    else if (mode === "asset_asc") cmp = compareTextPtBr(a.asset_label, b.asset_label);
+    else if (mode === "type_asc") cmp = compareTextPtBr(dbToUiAssetType(a.asset_type), dbToUiAssetType(b.asset_type));
+
+    if (cmp !== 0) return cmp;
+    return portfolioStableCompare(a, b);
+  });
+}
+
+function getRowListByView(viewKey) {
+  if (viewKey === "business") return appState.businessRows;
+  if (viewKey === "personal") return appState.personalExpenses;
+  return appState.portfolioRows;
+}
+
+function scheduleNewRowFlashReset(viewKey, rowIdentity, timeoutMs = 1100) {
+  setTimeout(() => {
+    const list = getRowListByView(viewKey);
+    const idx = indexByIdentity(list, rowIdentity);
+    if (idx < 0) return;
+    if (!list[idx].__isNew) return;
+    list[idx] = { ...list[idx], __isNew: false };
+    const api = getGridApiByView(viewKey);
+    api?.redrawRows?.();
+  }, timeoutMs);
+}
+
+function markRowAsNew(viewKey, row) {
+  if (!row) return;
+  row.__isNew = true;
+  scheduleNewRowFlashReset(viewKey, row);
 }
 
 function filteredBusinessRows() {
@@ -1744,19 +2201,35 @@ function filteredBusinessRows() {
     rows = rows.filter((row) => matchesMonth(row.entry_date, appState.businessMonthFilter));
   }
 
-  return [...rows].sort((a, b) => {
-    const dateA = String(a.entry_date || "");
-    const dateB = String(b.entry_date || "");
-    if (dateA !== dateB) return dateA.localeCompare(dateB);
+  return sortBusinessRows(rows);
+}
 
-    const idxA = Math.max(1, Number.isFinite(Number(a.installment_index)) ? Math.floor(Number(a.installment_index)) : 1);
-    const idxB = Math.max(1, Number.isFinite(Number(b.installment_index)) ? Math.floor(Number(b.installment_index)) : 1);
-    if (idxA !== idxB) return idxA - idxB;
+function filteredPersonalRows() {
+  const key = appState.personalFilter;
+  let rows = appState.personalExpenses;
+  const today = todayISO();
 
-    const idA = Number.isFinite(Number(a.id)) ? Number(a.id) : Number.MAX_SAFE_INTEGER;
-    const idB = Number.isFinite(Number(b.id)) ? Number(b.id) : Number.MAX_SAFE_INTEGER;
-    return idA - idB;
-  });
+  if (appState.personalMonthFilter) {
+    rows = rows.filter((row) => matchesMonth(getPersonalExpenseReferenceDate(row), appState.personalMonthFilter));
+  }
+
+  if (key === "pending") rows = rows.filter((row) => row.status === "Pendente");
+  else if (key === "overdue") rows = rows.filter((row) => row.status === "Pendente" && row.due_date < today);
+  else if (key === "month") rows = rows.filter((row) => isSameMonth(getPersonalExpenseReferenceDate(row)));
+
+  return sortPersonalRows(rows);
+}
+
+function filteredPortfolioRows() {
+  let rows = appState.portfolioRows;
+  if (appState.investmentMonthFilter) {
+    rows = rows.filter((row) => {
+      const month = getInvestmentMonthKey(row);
+      return matchesMonth(month, appState.investmentMonthFilter);
+    });
+  }
+
+  return sortPortfolioRows(rows);
 }
 
 function renderBusinessMonthTabs() {
@@ -1783,34 +2256,6 @@ function renderBusinessRows() {
   gridState.businessApi.setGridOption("rowData", filteredBusinessRows());
   renderBusinessMonthTabs();
   refreshBusinessPieChart();
-}
-
-function filteredPersonalRows() {
-  const key = appState.personalFilter;
-  let rows = appState.personalExpenses;
-  const today = todayISO();
-
-  if (appState.personalMonthFilter) {
-    rows = rows.filter((row) => matchesMonth(getPersonalExpenseReferenceDate(row), appState.personalMonthFilter));
-  }
-
-  if (key === "pending") rows = rows.filter((row) => row.status === "Pendente");
-  else if (key === "overdue") rows = rows.filter((row) => row.status === "Pendente" && row.due_date < today);
-  else if (key === "month") rows = rows.filter((row) => isSameMonth(getPersonalExpenseReferenceDate(row)));
-
-  return [...rows].sort((a, b) => {
-    const dueA = getPersonalExpenseReferenceDate(a);
-    const dueB = getPersonalExpenseReferenceDate(b);
-    if (dueA !== dueB) return dueA.localeCompare(dueB);
-
-    const idxA = Math.max(1, Number.isFinite(Number(a.installment_index)) ? Math.floor(Number(a.installment_index)) : 1);
-    const idxB = Math.max(1, Number.isFinite(Number(b.installment_index)) ? Math.floor(Number(b.installment_index)) : 1);
-    if (idxA !== idxB) return idxA - idxB;
-
-    const idA = Number.isFinite(Number(a.id)) ? Number(a.id) : Number.MAX_SAFE_INTEGER;
-    const idB = Number.isFinite(Number(b.id)) ? Number(b.id) : Number.MAX_SAFE_INTEGER;
-    return idA - idB;
-  });
 }
 
 function renderPersonalMonthTabs() {
@@ -1840,14 +2285,6 @@ function renderPersonalRows() {
   refreshPersonalCards();
 }
 
-function filteredPortfolioRows() {
-  if (!appState.investmentMonthFilter) return appState.portfolioRows;
-  return appState.portfolioRows.filter((row) => {
-    const month = getInvestmentMonthKey(row);
-    return matchesMonth(month, appState.investmentMonthFilter);
-  });
-}
-
 function renderInvestmentMonthTabs() {
   const months = new Set();
   for (const row of appState.portfolioRows) {
@@ -1871,6 +2308,29 @@ function renderPortfolioRows() {
   if (!gridState.portfolioApi) return;
   gridState.portfolioApi.setGridOption("rowData", filteredPortfolioRows());
   renderInvestmentMonthTabs();
+}
+
+function setupSortEvents() {
+  refs.businessSortMode?.addEventListener("change", (event) => {
+    appState.businessSortMode = String(event?.target?.value || "date_desc");
+    renderBusinessRows();
+  });
+
+  refs.personalSortMode?.addEventListener("change", (event) => {
+    appState.personalSortMode = String(event?.target?.value || "due_asc");
+    renderPersonalRows();
+  });
+
+  refs.investmentSortMode?.addEventListener("change", (event) => {
+    appState.investmentSortMode = String(event?.target?.value || "result_desc");
+    renderPortfolioRows();
+  });
+}
+
+function syncSortControls() {
+  if (refs.businessSortMode) refs.businessSortMode.value = appState.businessSortMode;
+  if (refs.personalSortMode) refs.personalSortMode.value = appState.personalSortMode;
+  if (refs.investmentSortMode) refs.investmentSortMode.value = appState.investmentSortMode;
 }
 
 function updateFilterButtons() {
@@ -1993,8 +2453,57 @@ function initBusinessGrid() {
       maxWidth: 105,
       headerClass: "header-center",
       cellClass: "cell-center",
-      valueParser: (params) => toInstallmentTotal(params.newValue),
+      valueSetter: (params) => {
+        const parsed = toInstallmentTotal(params.newValue);
+        params.data.installment_total = parsed;
+        if (parsed > 1) {
+          params.data.is_recurring = 0;
+          params.data.recurrence_interval_months = 1;
+        }
+        return true;
+      },
       valueFormatter: (params) => String(toInstallmentTotal(params.value))
+    },
+    {
+      headerName: "Recorrente",
+      field: "is_recurring",
+      editable: (params) => {
+        const idx = Number(params.data.installment_index || 1);
+        const total = toInstallmentTotal(params.data.installment_total);
+        return idx <= 1 && total <= 1;
+      },
+      minWidth: 120,
+      maxWidth: 130,
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: { values: ["Nao", "Sim"], center: true },
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueGetter: (params) => dbToUiRecurring(params.data.is_recurring),
+      valueSetter: (params) => {
+        params.data.is_recurring = uiToDbRecurring(params.newValue);
+        if (!params.data.is_recurring) {
+          params.data.recurrence_interval_months = 1;
+        }
+        return true;
+      }
+    },
+    {
+      headerName: "Intervalo",
+      field: "recurrence_interval_months",
+      editable: (params) => {
+        const idx = Number(params.data.installment_index || 1);
+        const total = toInstallmentTotal(params.data.installment_total);
+        return idx <= 1 && total <= 1 && uiToDbRecurring(params.data.is_recurring) === 1;
+      },
+      minWidth: 105,
+      maxWidth: 115,
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueSetter: (params) => {
+        params.data.recurrence_interval_months = toInstallmentTotal(params.newValue || 1);
+        return true;
+      },
+      valueFormatter: (params) => `${toInstallmentTotal(params.value || 1)}m`
     }
   ];
 
@@ -2004,6 +2513,9 @@ function initBusinessGrid() {
     rowSelection: "multiple",
     suppressRowClickSelection: true,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
+    rowClassRules: {
+      "row-new-flash": (params) => Boolean(params.data?.__isNew)
+    },
     defaultColDef: {
       editable: true,
       sortable: true,
@@ -2142,8 +2654,57 @@ function initPersonalGrid() {
       maxWidth: 105,
       headerClass: "header-center",
       cellClass: "cell-center",
-      valueParser: (params) => toInstallmentTotal(params.newValue),
+      valueSetter: (params) => {
+        const parsed = toInstallmentTotal(params.newValue);
+        params.data.installment_total = parsed;
+        if (parsed > 1) {
+          params.data.is_recurring = 0;
+          params.data.recurrence_interval_months = 1;
+        }
+        return true;
+      },
       valueFormatter: (params) => String(toInstallmentTotal(params.value))
+    },
+    {
+      headerName: "Recorrente",
+      field: "is_recurring",
+      editable: (params) => {
+        const idx = Number(params.data.installment_index || 1);
+        const total = toInstallmentTotal(params.data.installment_total);
+        return idx <= 1 && total <= 1;
+      },
+      minWidth: 120,
+      maxWidth: 130,
+      cellEditor: CategorySelectEditor,
+      cellEditorParams: { values: ["Nao", "Sim"], center: true },
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueGetter: (params) => dbToUiRecurring(params.data.is_recurring),
+      valueSetter: (params) => {
+        params.data.is_recurring = uiToDbRecurring(params.newValue);
+        if (!params.data.is_recurring) {
+          params.data.recurrence_interval_months = 1;
+        }
+        return true;
+      }
+    },
+    {
+      headerName: "Intervalo",
+      field: "recurrence_interval_months",
+      editable: (params) => {
+        const idx = Number(params.data.installment_index || 1);
+        const total = toInstallmentTotal(params.data.installment_total);
+        return idx <= 1 && total <= 1 && uiToDbRecurring(params.data.is_recurring) === 1;
+      },
+      minWidth: 105,
+      maxWidth: 115,
+      headerClass: "header-center",
+      cellClass: "cell-center",
+      valueSetter: (params) => {
+        params.data.recurrence_interval_months = toInstallmentTotal(params.newValue || 1);
+        return true;
+      },
+      valueFormatter: (params) => `${toInstallmentTotal(params.value || 1)}m`
     },
     {
       headerName: "Status",
@@ -2175,6 +2736,9 @@ function initPersonalGrid() {
     rowSelection: "multiple",
     suppressRowClickSelection: true,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
+    rowClassRules: {
+      "row-new-flash": (params) => Boolean(params.data?.__isNew)
+    },
     defaultColDef: {
       editable: true,
       sortable: true,
@@ -2356,6 +2920,9 @@ function initPortfolioGrid() {
     rowSelection: "multiple",
     suppressRowClickSelection: true,
     getRowId: (params) => String(params.data.id || params.data.__tmpId),
+    rowClassRules: {
+      "row-new-flash": (params) => Boolean(params.data?.__isNew)
+    },
     defaultColDef: {
       editable: true,
       sortable: true,
@@ -2407,9 +2974,41 @@ function focusFirstRowForEditing(api, colKey) {
   if (!api) return;
   const firstRow = api.getDisplayedRowAtIndex(0);
   if (!firstRow) return;
+  if (typeof api.deselectAll === "function") api.deselectAll();
+  firstRow.setSelected?.(true, true);
   api.ensureIndexVisible(0, "top");
   api.setFocusedCell(0, colKey);
   api.startEditingCell({ rowIndex: 0, colKey });
+}
+
+function focusRowForEditingByIdentity(api, rowIdentity, colKey) {
+  if (!api || !rowIdentity) return;
+
+  let targetNode = null;
+  api.forEachNode((node) => {
+    if (targetNode) return;
+    const data = node?.data || {};
+
+    if (rowIdentity.id && Number(data.id) === Number(rowIdentity.id)) {
+      targetNode = node;
+      return;
+    }
+
+    if (rowIdentity.__tmpId && data.__tmpId && data.__tmpId === rowIdentity.__tmpId) {
+      targetNode = node;
+    }
+  });
+
+  if (!targetNode || typeof targetNode.rowIndex !== "number" || targetNode.rowIndex < 0) {
+    focusFirstRowForEditing(api, colKey);
+    return;
+  }
+
+  if (typeof api.deselectAll === "function") api.deselectAll();
+  targetNode.setSelected?.(true, true);
+  api.ensureIndexVisible(targetNode.rowIndex, "middle");
+  api.setFocusedCell(targetNode.rowIndex, colKey);
+  api.startEditingCell({ rowIndex: targetNode.rowIndex, colKey });
 }
 
 function removeFromListByIdentity(list, row) {
@@ -2549,25 +3148,23 @@ function registerAddButtons() {
 
   refs.addBusinessRow.addEventListener("click", () => {
     const row = normalizeBusinessRow({
-      entry_date: todayISO(),
+      entry_date: defaultIsoDateForMonthFilter(appState.businessMonthFilter),
       description: "Nova movimentacao",
       entry_type: "Entrada",
       category: appState.businessCategories[0] || "Venda Balcao",
       amount: 0,
       installment_total: 1,
       installment_index: 1,
-      installment_group_id: null
+      installment_group_id: null,
+      is_recurring: 0,
+      recurrence_interval_months: 1
     });
-
-    const rowMonth = extractMonth(row.entry_date);
-    if (appState.businessMonthFilter && rowMonth && appState.businessMonthFilter !== rowMonth) {
-      setBusinessMonthFilter(rowMonth, { render: false });
-    }
+    markRowAsNew("business", row);
 
     upsertIntoList(appState.businessRows, row);
     renderBusinessRows();
     refreshBusinessCards();
-    focusFirstRowForEditing(gridState.businessApi, "description");
+    focusRowForEditingByIdentity(gridState.businessApi, row, "entry_date");
   });
 
   refs.deletePersonalRow.addEventListener("click", () => {
@@ -2576,20 +3173,18 @@ function registerAddButtons() {
 
   refs.addPersonalRow.addEventListener("click", () => {
     const row = normalizePersonalExpenseRow({
-      due_date: todayISO(),
+      due_date: defaultIsoDateForMonthFilter(appState.personalMonthFilter),
       description: "Novo registro",
       category: appState.personalCategories[0] || "Moradia",
       amount: 0,
       status: "Pendente",
       installment_total: 1,
       installment_index: 1,
-      installment_group_id: null
+      installment_group_id: null,
+      is_recurring: 0,
+      recurrence_interval_months: 1
     });
-
-    const rowMonth = extractMonth(row.due_date);
-    if (appState.personalMonthFilter && rowMonth && appState.personalMonthFilter !== rowMonth) {
-      setPersonalMonthFilter(rowMonth, { render: false });
-    }
+    markRowAsNew("personal", row);
     if (appState.personalFilter !== "none") {
       appState.personalFilter = "none";
       updateFilterButtons();
@@ -2598,7 +3193,7 @@ function registerAddButtons() {
     upsertIntoList(appState.personalExpenses, row);
     renderPersonalRows();
     refreshPersonalCards();
-    focusFirstRowForEditing(gridState.personalApi, "description");
+    focusRowForEditingByIdentity(gridState.personalApi, row, "due_date");
   });
 
   refs.deletePortfolioRow.addEventListener("click", () => {
@@ -2614,18 +3209,14 @@ function registerAddButtons() {
       avg_price: 0,
       current_unit_price: 0,
       current_value: 0,
-      updated_at: todayISO()
+      updated_at: defaultIsoDateForMonthFilter(appState.investmentMonthFilter)
     });
-
-    const rowMonth = getInvestmentMonthKey(row);
-    if (appState.investmentMonthFilter && rowMonth && appState.investmentMonthFilter !== rowMonth) {
-      setInvestmentMonthFilter(rowMonth, { render: false });
-    }
+    markRowAsNew("investments", row);
 
     upsertIntoList(appState.portfolioRows, row);
     renderPortfolioRows();
     refreshInvestmentCards();
-    focusFirstRowForEditing(gridState.portfolioApi, "asset_label");
+    focusRowForEditingByIdentity(gridState.portfolioApi, row, "asset_label");
   });
 
   refs.addBusinessCategoryButton.addEventListener("click", () => {
@@ -2767,27 +3358,81 @@ function applyPortfolioPolling(payload) {
   refreshInvestmentCards();
 }
 
+function applyInitialDataToState(initialData) {
+  const goalFromSettings = toNumber(initialData?.userSettings?.meta_patrimonio);
+  appState.portfolioGoal = goalFromSettings > 0
+    ? goalFromSettings
+    : toNumber(initialData?.meta?.portfolioGoal || 100000);
+
+  appState.businessRows = (initialData?.businessEntries || []).map(normalizeBusinessRow);
+  appState.personalIncomes = (initialData?.personalIncomes || []).map(normalizePersonalIncomeRow);
+  appState.personalExpenses = (initialData?.personalExpenses || []).map(normalizePersonalExpenseRow);
+  appState.portfolioRows = (initialData?.portfolioPositions || []).map(normalizePortfolioRow);
+  initCategoryState(initialData?.userSettings || {});
+  renderBillAlerts(initialData?.billAlerts || { bills: [], windowDays: 2 });
+}
+
+function applyDefaultMonthFiltersIfNeeded() {
+  const month = currentMonthPrefix();
+
+  if (!extractMonth(appState.businessMonthFilter)) {
+    setBusinessMonthFilter(month, { render: false, inputMonth: month });
+  }
+  if (!extractMonth(appState.personalMonthFilter)) {
+    setPersonalMonthFilter(month, { render: false, inputMonth: month });
+  }
+  if (!extractMonth(appState.investmentMonthFilter)) {
+    setInvestmentMonthFilter(month, { render: false, inputMonth: month });
+  }
+}
+
+function renderAllViews() {
+  updateMonthFilterLabels();
+  renderBusinessRows();
+  setPersonalFilter(appState.personalFilter || "none");
+  renderPortfolioRows();
+  refreshBusinessCards();
+  refreshPersonalCards();
+  refreshInvestmentCards();
+}
+
+async function reloadDataFromDatabase(options = {}) {
+  const { silent = false } = options;
+
+  try {
+    const initialData = await window.financeAPI.getInitialData();
+    applyInitialDataToState(initialData);
+
+    if (refs.goalInput) {
+      refs.goalInput.value = appState.portfolioGoal;
+    }
+
+    renderAllViews();
+
+    if (!silent) {
+      pushNotification(
+        "Dados atualizados",
+        "Novos lancamentos recorrentes foram adicionados ao mes atual.",
+        `reload-${Date.now()}`
+      );
+    }
+  } catch (error) {
+    console.error("Falha ao recarregar dados:", error);
+  }
+}
+
 async function bootstrap() {
   initRefs();
   renderNotificationCenter();
   updateSidebarToggleLabel();
   setupShellEvents();
   setupPersonalFilterEvents();
+  setupSortEvents();
   applyThemeMode();
   updateThemeToggleText();
 
   const initialData = await window.financeAPI.getInitialData();
-  const goalFromSettings = toNumber(initialData.userSettings?.meta_patrimonio);
-  appState.portfolioGoal = goalFromSettings > 0
-    ? goalFromSettings
-    : toNumber(initialData.meta?.portfolioGoal || 100000);
-
-  appState.businessRows = (initialData.businessEntries || []).map(normalizeBusinessRow);
-  appState.personalIncomes = (initialData.personalIncomes || []).map(normalizePersonalIncomeRow);
-  appState.personalExpenses = (initialData.personalExpenses || []).map(normalizePersonalExpenseRow);
-  appState.portfolioRows = (initialData.portfolioPositions || []).map(normalizePortfolioRow);
-  initCategoryState(initialData.userSettings || {});
-  renderBillAlerts(initialData.billAlerts || { bills: [], windowDays: 2 });
+  applyInitialDataToState(initialData);
 
   initBusinessGrid();
   initPersonalGrid();
@@ -2795,19 +3440,30 @@ async function bootstrap() {
   registerAddButtons();
   applyThemeMode();
 
+  applyDefaultMonthFiltersIfNeeded();
+  syncSortControls();
   refs.goalInput.value = appState.portfolioGoal;
 
-  renderBusinessRows();
-  renderPortfolioRows();
-  setPersonalFilter("none");
-  refreshBusinessCards();
-  refreshPersonalCards();
-  refreshInvestmentCards();
+  renderAllViews();
   setActiveView("business");
 
-  window.financeAPI.onUpdateAvailable((payload) => showUpdateBanner(payload));
+  if (typeof window.financeAPI.onUpdateState === "function") {
+    window.financeAPI.onUpdateState((payload) => applyUpdateState(payload));
+  } else {
+    window.financeAPI.onUpdateAvailable((payload) => showUpdateBanner(payload));
+  }
   window.financeAPI.onPortfolioUpdated((payload) => applyPortfolioPolling(payload));
   window.financeAPI.onBillAlerts((payload) => renderBillAlerts(payload));
+  window.financeAPI.onRecurringRowsGenerated((payload) => {
+    reloadDataFromDatabase({ silent: true });
+    if (payload?.totalCreated) {
+      pushNotification(
+        "Recorrencias sincronizadas",
+        `${payload.totalCreated} lancamento(s) recorrente(s) adicionado(s) automaticamente.`,
+        `recurring-${payload.businessCreated || 0}-${payload.personalCreated || 0}-${Date.now()}`
+      );
+    }
+  });
   window.financeAPI.getBillAlerts().then((payload) => renderBillAlerts(payload)).catch((error) => {
     console.error("Falha ao atualizar alertas de vencimento:", error);
   });

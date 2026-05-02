@@ -377,17 +377,16 @@
 
       .pie-layout {
         display: grid;
-        grid-template-columns: minmax(210px, 240px) minmax(280px, 420px) minmax(260px, 340px);
-        column-gap: 1.15rem;
-        row-gap: 0.85rem;
+        grid-template-columns: minmax(230px, 260px) minmax(300px, 1fr) minmax(260px, 340px);
+        column-gap: 1.25rem;
+        row-gap: 1rem;
         align-items: stretch;
-        justify-content: space-between;
       }
 
       .pie-donut {
         position: relative;
-        width: 220px;
-        height: 220px;
+        width: 240px;
+        height: 240px;
         border-radius: 999px;
         border: 1px solid var(--line);
         background: conic-gradient(#27272a 0 100%);
@@ -398,7 +397,7 @@
       .pie-donut::after {
         content: "";
         position: absolute;
-        inset: 24%;
+        inset: 22%;
         border-radius: 999px;
         background: var(--bg-panel);
         border: 1px solid var(--line);
@@ -414,7 +413,7 @@
         text-align: center;
         font-family: "JetBrains Mono", "Consolas", monospace;
         color: #e4e4e7;
-        padding: 0 0.45rem;
+        padding: 0 0.35rem;
         line-height: 1.2;
         pointer-events: none;
       }
@@ -430,22 +429,22 @@
 
       .pie-total-value {
         display: block;
-        font-size: clamp(12px, 1.2vw, 16px);
-        line-height: 1.2;
+        font-size: 16px;
+        line-height: 1.1;
         font-weight: 700;
-        max-width: 11.5ch;
+        max-width: 14ch;
         margin: 0 auto;
-        white-space: normal;
-        overflow-wrap: anywhere;
+        white-space: nowrap;
+        overflow: hidden;
       }
 
       .pie-legend {
         display: grid;
         gap: 0.45rem;
-        max-height: 220px;
+        max-height: 240px;
         overflow: auto;
         width: 100%;
-        min-height: 220px;
+        min-height: 240px;
         padding: 0.6rem;
         padding-right: 0.45rem;
         border: 1px solid var(--line);
@@ -461,7 +460,7 @@
         background: rgba(24, 24, 27, 0.28);
         display: grid;
         gap: 0.7rem;
-        min-height: 220px;
+        min-height: 240px;
         align-content: start;
       }
 
@@ -625,10 +624,12 @@
       .month-tab {
         border: 1px solid #3f3f46;
         color: #d4d4d8;
-        border-radius: 0.35rem;
-        padding: 0.25rem 0.5rem;
+        border-radius: 999px;
+        padding: 0.33rem 0.68rem;
         font-size: 11px;
         background: transparent;
+        white-space: nowrap;
+        flex: 0 0 auto;
       }
 
       .month-tab:hover {
@@ -640,13 +641,66 @@
         color: #eab308 !important;
       }
 
+      .month-panel {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        border: 1px solid var(--line);
+        border-radius: 0.55rem;
+        padding: 0.4rem 0.5rem;
+        background: rgba(9, 9, 11, 0.45);
+        width: max-content;
+        max-width: 100%;
+        flex-wrap: wrap;
+      }
+
+      .month-nav-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+      }
+
+      .month-nav-btn {
+        height: 2rem;
+        min-width: 2.05rem;
+        border: 1px solid #3f3f46;
+        border-radius: 0.4rem;
+        background: transparent;
+        color: #d4d4d8;
+        padding: 0 0.7rem;
+        font-size: 12px;
+      }
+
+      .month-nav-btn:hover {
+        border-color: #71717a;
+      }
+
+      .month-picker-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+      }
+
       .mini-calendar-input {
-        width: 10.5rem;
+        width: 9.4rem;
         color-scheme: dark;
       }
 
       body.theme-light .mini-calendar-input {
         color-scheme: light;
+      }
+
+      body.theme-light .month-panel {
+        background: #f8fafc;
+      }
+
+      body.theme-light .month-nav-btn {
+        border-color: #cbd5e1;
+        color: #334155;
+      }
+
+      body.theme-light .month-nav-btn:hover {
+        border-color: #94a3b8;
       }
 
       .mini-calendar-input::-webkit-calendar-picker-indicator {
@@ -662,6 +716,53 @@
         background: #e4e4e7;
         border-color: #cbd5e1;
         filter: none;
+      }
+
+      .row-tools {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+      }
+
+      .row-tools-label {
+        font-size: 11px;
+        color: #a1a1aa;
+      }
+
+      .row-tools-select {
+        height: 1.9rem;
+        border: 1px solid #3f3f46;
+        border-radius: 0.4rem;
+        background: #09090b;
+        color: #f4f4f5;
+        padding: 0 0.55rem;
+        font-size: 12px;
+        min-width: 182px;
+        outline: none;
+      }
+
+      .row-tools-select:focus {
+        border-color: #eab308;
+      }
+
+      body.theme-light .row-tools-label {
+        color: #64748b;
+      }
+
+      body.theme-light .row-tools-select {
+        border-color: #cbd5e1;
+        background: #ffffff;
+        color: #0f172a;
+      }
+
+      body.theme-light .row-tools-select:focus {
+        border-color: #b45309;
+      }
+
+      @media (max-width: 1140px) {
+        .month-panel {
+          width: 100%;
+        }
       }
 
       .update-banner {
@@ -1208,6 +1309,10 @@
         animation: flash-down 1s ease;
       }
 
+      .fin-grid .ag-row.row-new-flash .ag-cell {
+        animation: row-new-flash 1.05s ease;
+      }
+
       @keyframes flash-up {
         0% {
           background-color: rgba(34, 197, 94, 0.35);
@@ -1220,6 +1325,15 @@
       @keyframes flash-down {
         0% {
           background-color: rgba(239, 68, 68, 0.35);
+        }
+        100% {
+          background-color: transparent;
+        }
+      }
+
+      @keyframes row-new-flash {
+        0% {
+          background-color: rgba(234, 179, 8, 0.22);
         }
         100% {
           background-color: transparent;
@@ -1377,7 +1491,7 @@
 
               <article class="dashboard-card rounded p-4">
                 <div class="mb-3 flex items-center justify-between gap-2">
-                  <p class="text-sm font-semibold">Visao por categoria</p>
+                  <p class="text-sm font-semibold">Distribuicao por categoria</p>
                   <p class="text-xs text-zinc-500">Empresarial</p>
                 </div>
                 <div class="pie-layout">
@@ -1394,23 +1508,41 @@
                 </div>
               </article>
 
-              <div class="flex flex-wrap items-center gap-2">
-                <label for="businessMonthInput" class="text-xs text-zinc-400">Mini calendario</label>
-                <input
-                  id="businessMonthInput"
-                  type="date"
-                  class="mini-calendar-input h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
-                />
-                <button
-                  id="businessMonthClear"
-                  type="button"
-                  class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
-                >
-                  Limpar
-                </button>
+              <div class="month-panel">
+                <div class="month-nav-group">
+                  <button
+                    id="businessPrevMonth"
+                    type="button"
+                    class="month-nav-btn"
+                    title="Mes anterior"
+                  >
+                    &lt;
+                  </button>
+                  <button
+                    id="businessNextMonth"
+                    type="button"
+                    class="month-nav-btn"
+                    title="Proximo mes"
+                  >
+                    &gt;
+                  </button>
+                </div>
+                <div class="month-picker-wrap">
+                  <input
+                    id="businessMonthInput"
+                    type="month"
+                    aria-label="Mes de referencia empresarial"
+                    class="mini-calendar-input h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
+                  />
+                  <button
+                    id="businessMonthClear"
+                    type="button"
+                    class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
+                  >
+                    Limpar
+                  </button>
+                </div>
               </div>
-
-              <div id="businessMonthTabs" class="flex flex-wrap gap-2"></div>
 
               <div class="grid gap-3 md:grid-cols-3">
                 <article class="dashboard-card rounded p-4">
@@ -1449,7 +1581,20 @@
               </div>
 
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <p class="text-xs text-zinc-500">Lancamentos empresariais</p>
+                <div class="flex flex-wrap items-center gap-2">
+                  <p class="text-xs text-zinc-500">Lancamentos empresariais</p>
+                  <div class="row-tools">
+                    <label for="businessSortMode" class="row-tools-label">Organizar</label>
+                    <select id="businessSortMode" class="row-tools-select">
+                      <option value="date_desc">Data (mais recente)</option>
+                      <option value="date_asc">Data (mais antiga)</option>
+                      <option value="amount_desc">Valor (maior)</option>
+                      <option value="amount_asc">Valor (menor)</option>
+                      <option value="category_asc">Categoria (A-Z)</option>
+                      <option value="type_group">Tipo (Entrada/Saida)</option>
+                    </select>
+                  </div>
+                </div>
                 <div class="flex items-center gap-2">
                   <button id="deleteBusinessRow" class="rounded border border-red-500/70 px-3 py-1 text-sm text-red-400 hover:bg-red-500/10">
                     Excluir registro
@@ -1475,7 +1620,7 @@
 
               <article class="dashboard-card rounded p-4">
                 <div class="mb-3 flex items-center justify-between gap-2">
-                  <p class="text-sm font-semibold">Visao por categoria</p>
+                  <p class="text-sm font-semibold">Distribuicao por categoria</p>
                   <p class="text-xs text-zinc-500">Pessoal</p>
                 </div>
                 <div class="pie-layout">
@@ -1492,23 +1637,41 @@
                 </div>
               </article>
 
-              <div class="flex flex-wrap items-center gap-2">
-                <label for="personalMonthInput" class="text-xs text-zinc-400">Mini calendario</label>
-                <input
-                  id="personalMonthInput"
-                  type="date"
-                  class="mini-calendar-input h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
-                />
-                <button
-                  id="personalMonthClear"
-                  type="button"
-                  class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
-                >
-                  Limpar
-                </button>
+              <div class="month-panel">
+                <div class="month-nav-group">
+                  <button
+                    id="personalPrevMonth"
+                    type="button"
+                    class="month-nav-btn"
+                    title="Mes anterior"
+                  >
+                    &lt;
+                  </button>
+                  <button
+                    id="personalNextMonth"
+                    type="button"
+                    class="month-nav-btn"
+                    title="Proximo mes"
+                  >
+                    &gt;
+                  </button>
+                </div>
+                <div class="month-picker-wrap">
+                  <input
+                    id="personalMonthInput"
+                    type="month"
+                    aria-label="Mes de referencia pessoal"
+                    class="mini-calendar-input h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
+                  />
+                  <button
+                    id="personalMonthClear"
+                    type="button"
+                    class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
+                  >
+                    Limpar
+                  </button>
+                </div>
               </div>
-
-              <div id="personalMonthTabs" class="flex flex-wrap gap-2"></div>
 
               <div class="grid gap-3 md:grid-cols-3">
                 <article class="dashboard-card rounded p-4">
@@ -1595,6 +1758,17 @@
                   <button id="filterOverdue" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">So vencidas</button>
                   <button id="filterMonth" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">Mes atual</button>
                   <button id="filterClear" class="filter-btn rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300">Limpar filtros</button>
+                  <div class="row-tools">
+                    <label for="personalSortMode" class="row-tools-label">Organizar</label>
+                    <select id="personalSortMode" class="row-tools-select">
+                      <option value="due_asc">Vencimento (proximo)</option>
+                      <option value="due_desc">Vencimento (distante)</option>
+                      <option value="amount_desc">Valor (maior)</option>
+                      <option value="amount_asc">Valor (menor)</option>
+                      <option value="category_asc">Categoria (A-Z)</option>
+                      <option value="status_group">Status (pendente/pago)</option>
+                    </select>
+                  </div>
                 </div>
                 <div class="flex items-center gap-2">
                   <button id="deletePersonalRow" class="rounded border border-red-500/70 px-3 py-1 text-sm text-red-400 hover:bg-red-500/10">
@@ -1659,26 +1833,57 @@
                 </article>
               </div>
 
-              <div class="flex flex-wrap items-center gap-2">
-                <label for="investmentMonthInput" class="text-xs text-zinc-400">Mini calendario</label>
-                <input
-                  id="investmentMonthInput"
-                  type="date"
-                  class="mini-calendar-input h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
-                />
-                <button
-                  id="investmentMonthClear"
-                  type="button"
-                  class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
-                >
-                  Limpar
-                </button>
+              <div class="month-panel">
+                <div class="month-nav-group">
+                  <button
+                    id="investmentPrevMonth"
+                    type="button"
+                    class="month-nav-btn"
+                    title="Mes anterior"
+                  >
+                    &lt;
+                  </button>
+                  <button
+                    id="investmentNextMonth"
+                    type="button"
+                    class="month-nav-btn"
+                    title="Proximo mes"
+                  >
+                    &gt;
+                  </button>
+                </div>
+                <div class="month-picker-wrap">
+                  <input
+                    id="investmentMonthInput"
+                    type="month"
+                    aria-label="Mes de referencia investimentos"
+                    class="mini-calendar-input h-8 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-white outline-none focus:border-yellow-500"
+                  />
+                  <button
+                    id="investmentMonthClear"
+                    type="button"
+                    class="h-8 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:border-zinc-500"
+                  >
+                    Limpar
+                  </button>
+                </div>
               </div>
 
-              <div id="investmentMonthTabs" class="flex flex-wrap gap-2"></div>
-
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <p class="text-xs text-zinc-500">Tabela unificada: Acoes, FIIs e CDB</p>
+                <div class="flex flex-wrap items-center gap-2">
+                  <p class="text-xs text-zinc-500">Tabela unificada: Acoes, FIIs e CDB</p>
+                  <div class="row-tools">
+                    <label for="investmentSortMode" class="row-tools-label">Organizar</label>
+                    <select id="investmentSortMode" class="row-tools-select">
+                      <option value="result_desc">Resultado (maior)</option>
+                      <option value="result_asc">Resultado (menor)</option>
+                      <option value="market_desc">Valor atual (maior)</option>
+                      <option value="market_asc">Valor atual (menor)</option>
+                      <option value="asset_asc">Ativo (A-Z)</option>
+                      <option value="type_asc">Tipo (A-Z)</option>
+                    </select>
+                  </div>
+                </div>
                 <div class="flex items-center gap-2">
                   <button id="deletePortfolioRow" class="rounded border border-red-500/70 px-3 py-1 text-sm text-red-400 hover:bg-red-500/10">
                     Excluir registro

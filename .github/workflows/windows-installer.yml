@@ -60,6 +60,8 @@ jobs:
           name: FinanceiroPessoal-Installer
           path: |
             dist/FinanceiroPessoal-Setup.exe
+            dist/FinanceiroPessoal-Setup.exe.blockmap
+            dist/latest.yml
             dist/FinanceiroPessoal-Setup-*.exe
           if-no-files-found: error
 
@@ -68,7 +70,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ github.ref_name }}
-          artifacts: "dist/FinanceiroPessoal-Setup.exe,dist/FinanceiroPessoal-Setup.exe.blockmap"
+          artifacts: "dist/FinanceiroPessoal-Setup.exe,dist/FinanceiroPessoal-Setup.exe.blockmap,dist/latest.yml"
           generateReleaseNotes: true
           allowUpdates: true
           replacesArtifacts: true

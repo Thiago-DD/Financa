@@ -39,6 +39,39 @@ function addMonthsIso(isoDate, monthOffset) {
   return `${base.getUTCFullYear()}-${String(base.getUTCMonth() + 1).padStart(2, "0")}-${String(safeDay).padStart(2, "0")}`;
 }
 
+function normalizeRecurringFlag(value) {
+  return Number(value) > 0 ? 1 : 0;
+}
+
+function normalizeRecurrenceInterval(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  const whole = Math.floor(numeric);
+  return Math.min(120, Math.max(1, whole));
+}
+
+function parseIsoDateParts(isoDate) {
+  const text = String(isoDate || "");
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return { year, month, day };
+}
+
+function monthDiff(fromIsoDate, toIsoDate) {
+  const from = parseIsoDateParts(fromIsoDate);
+  const to = parseIsoDateParts(toIsoDate);
+  if (!from || !to) return null;
+  return (to.year - from.year) * 12 + (to.month - from.month);
+}
+
+function startOfMonthIso(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 function ensurePersonalExpenseColumns(db) {
   const columns = db.prepare("PRAGMA table_info(personal_expenses)").all();
   const names = new Set(columns.map((col) => String(col.name)));
@@ -52,12 +85,26 @@ function ensurePersonalExpenseColumns(db) {
   if (!names.has("installment_group_id")) {
     db.exec("ALTER TABLE personal_expenses ADD COLUMN installment_group_id TEXT");
   }
+  if (!names.has("is_recurring")) {
+    db.exec("ALTER TABLE personal_expenses ADD COLUMN is_recurring INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("recurrence_interval_months")) {
+    db.exec("ALTER TABLE personal_expenses ADD COLUMN recurrence_interval_months INTEGER NOT NULL DEFAULT 1");
+  }
 
   db.exec(`
     UPDATE personal_expenses
     SET
       installment_total = COALESCE(NULLIF(installment_total, 0), 1),
-      installment_index = COALESCE(NULLIF(installment_index, 0), 1)
+      installment_index = COALESCE(NULLIF(installment_index, 0), 1),
+      is_recurring = CASE
+        WHEN COALESCE(is_recurring, 0) > 0 THEN 1
+        ELSE 0
+      END,
+      recurrence_interval_months = CASE
+        WHEN COALESCE(recurrence_interval_months, 1) < 1 THEN 1
+        ELSE recurrence_interval_months
+      END
   `);
 }
 
@@ -74,13 +121,244 @@ function ensureBusinessEntryColumns(db) {
   if (!names.has("installment_group_id")) {
     db.exec("ALTER TABLE business_entries ADD COLUMN installment_group_id TEXT");
   }
+  if (!names.has("is_recurring")) {
+    db.exec("ALTER TABLE business_entries ADD COLUMN is_recurring INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("recurrence_interval_months")) {
+    db.exec("ALTER TABLE business_entries ADD COLUMN recurrence_interval_months INTEGER NOT NULL DEFAULT 1");
+  }
 
   db.exec(`
     UPDATE business_entries
     SET
       installment_total = COALESCE(NULLIF(installment_total, 0), 1),
-      installment_index = COALESCE(NULLIF(installment_index, 0), 1)
+      installment_index = COALESCE(NULLIF(installment_index, 0), 1),
+      is_recurring = CASE
+        WHEN COALESCE(is_recurring, 0) > 0 THEN 1
+        ELSE 0
+      END,
+      recurrence_interval_months = CASE
+        WHEN COALESCE(recurrence_interval_months, 1) < 1 THEN 1
+        ELSE recurrence_interval_months
+      END
   `);
+}
+
+function tableExists(db, tableName) {
+  const row = db.prepare(`
+    SELECT 1
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(String(tableName || ""));
+
+  return Boolean(row);
+}
+
+function normalizeBusinessTypeToken(value) {
+  return String(value || "")
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+function looksLikeEntryType(value) {
+  const token = normalizeBusinessTypeToken(value);
+  return token.includes("entrada");
+}
+
+function looksLikeExitType(value) {
+  const token = normalizeBusinessTypeToken(value);
+  return token.startsWith("s") || token.includes("saida") || token.includes("sada");
+}
+
+function getBusinessExitLabel(db) {
+  if (db.__businessExitLabel) return db.__businessExitLabel;
+
+  let exitLabel = "Saida";
+  const row = db.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'business_entries'
+  `).get();
+
+  const createSql = String(row?.sql || "");
+  const inMatch = createSql.match(/entry_type\s+IN\s*\(([^)]+)\)/i);
+  if (inMatch) {
+    const quoted = String(inMatch[1])
+      .match(/'([^']+)'/g)
+      ?.map((item) => item.slice(1, -1))
+      .filter(Boolean) || [];
+
+    const nonEntry = quoted.find((value) => !looksLikeEntryType(value));
+    if (nonEntry && looksLikeExitType(nonEntry)) {
+      exitLabel = nonEntry;
+    }
+  }
+
+  if (exitLabel === "Saida" && tableExists(db, "business_entries")) {
+    const distinct = db.prepare(`
+      SELECT DISTINCT entry_type
+      FROM business_entries
+      WHERE entry_type IS NOT NULL AND TRIM(entry_type) <> ''
+      ORDER BY id DESC
+      LIMIT 20
+    `).all();
+
+    const nonEntryFromData = distinct
+      .map((rowValue) => String(rowValue.entry_type || ""))
+      .find((value) => !looksLikeEntryType(value) && looksLikeExitType(value));
+
+    if (nonEntryFromData) {
+      exitLabel = nonEntryFromData;
+    }
+  }
+
+  db.__businessExitLabel = exitLabel;
+  return exitLabel;
+}
+
+function normalizeBusinessEntryTypeValue(value, exitLabel) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Entrada";
+  if (looksLikeEntryType(raw)) return "Entrada";
+  if (looksLikeExitType(raw)) return String(exitLabel || "Saida");
+  return "Entrada";
+}
+
+function toDbBusinessEntryType(value, db) {
+  return normalizeBusinessEntryTypeValue(value, getBusinessExitLabel(db));
+}
+
+function ensureBusinessEntryTypeValues(db) {
+  if (!tableExists(db, "business_entries")) return;
+
+  const exitLabel = getBusinessExitLabel(db);
+  const rows = db.prepare(`
+    SELECT id, entry_type
+    FROM business_entries
+  `).all();
+
+  if (!rows.length) return;
+
+  const updateStmt = db.prepare(`
+    UPDATE business_entries
+    SET entry_type = ?, updated_at = ?
+    WHERE id = ?
+  `);
+
+  const stamp = nowISO();
+  const apply = db.transaction(() => {
+    for (const row of rows) {
+      const normalized = normalizeBusinessEntryTypeValue(row.entry_type, exitLabel);
+      if (normalized !== row.entry_type) {
+        updateStmt.run(normalized, stamp, row.id);
+      }
+    }
+  });
+
+  try {
+    apply();
+  } catch (error) {
+    console.warn("[DB] Falha ao normalizar entry_type legado:", error.message);
+  }
+}
+
+function ensureQuoteHistoryColumns(db) {
+  if (!tableExists(db, "quote_history")) return;
+
+  const columns = db.prepare("PRAGMA table_info(quote_history)").all();
+  const names = new Set(columns.map((col) => String(col.name)));
+  const required = ["portfolio_position_id", "ticker", "unit_price", "total_value", "source", "quoted_at"];
+  const missingRequired = required.some((column) => !names.has(column));
+
+  if (!missingRequired) {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_quote_history_position_date
+      ON quote_history(portfolio_position_id, quoted_at DESC)
+    `);
+    return;
+  }
+
+  const rawPositionExpr = names.has("portfolio_position_id")
+    ? "portfolio_position_id"
+    : names.has("position_id")
+      ? "position_id"
+      : names.has("portfolio_id")
+        ? "portfolio_id"
+        : "NULL";
+
+  const safePositionExpr = rawPositionExpr === "NULL"
+    ? "NULL"
+    : `CASE WHEN ${rawPositionExpr} IN (SELECT id FROM portfolio_positions) THEN ${rawPositionExpr} ELSE NULL END`;
+
+  const selectMap = {
+    id: names.has("id") ? "id" : "NULL",
+    portfolio_position_id: safePositionExpr,
+    ticker: names.has("ticker") ? "ticker" : "NULL",
+    unit_price: names.has("unit_price")
+      ? "unit_price"
+      : names.has("current_unit_price")
+        ? "current_unit_price"
+        : names.has("price")
+          ? "price"
+          : "0",
+    total_value: names.has("total_value")
+      ? "total_value"
+      : names.has("current_value")
+        ? "current_value"
+        : names.has("market_value")
+          ? "market_value"
+          : names.has("unit_price")
+            ? "unit_price"
+            : "0",
+    source: names.has("source") ? "source" : "'legacy-migrated'",
+    quoted_at: names.has("quoted_at")
+      ? "quoted_at"
+      : names.has("created_at")
+        ? "created_at"
+        : "CURRENT_TIMESTAMP"
+  };
+
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE quote_history_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        portfolio_position_id INTEGER,
+        ticker TEXT,
+        unit_price REAL NOT NULL,
+        total_value REAL NOT NULL,
+        source TEXT NOT NULL DEFAULT 'polling',
+        quoted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (portfolio_position_id) REFERENCES portfolio_positions(id) ON DELETE CASCADE
+      )
+    `);
+
+    db.exec(`
+      INSERT INTO quote_history_new (
+        id, portfolio_position_id, ticker, unit_price, total_value, source, quoted_at
+      )
+      SELECT
+        ${selectMap.id} AS id,
+        ${selectMap.portfolio_position_id} AS portfolio_position_id,
+        ${selectMap.ticker} AS ticker,
+        ${selectMap.unit_price} AS unit_price,
+        ${selectMap.total_value} AS total_value,
+        ${selectMap.source} AS source,
+        ${selectMap.quoted_at} AS quoted_at
+      FROM quote_history
+    `);
+
+    db.exec("DROP TABLE quote_history");
+    db.exec("ALTER TABLE quote_history_new RENAME TO quote_history");
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_quote_history_position_date
+      ON quote_history(portfolio_position_id, quoted_at DESC)
+    `);
+  });
+
+  migrate();
 }
 
 function calculateCdbProRata(principal, percentCdi, cdiAnnualRate, applicationDate, refDate = new Date()) {
@@ -117,6 +395,8 @@ function initDatabase(dbFilePath) {
       installment_total INTEGER NOT NULL DEFAULT 1,
       installment_index INTEGER NOT NULL DEFAULT 1,
       installment_group_id TEXT,
+      is_recurring INTEGER NOT NULL DEFAULT 0,
+      recurrence_interval_months INTEGER NOT NULL DEFAULT 1,
       notes TEXT DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -150,6 +430,8 @@ function initDatabase(dbFilePath) {
       installment_total INTEGER NOT NULL DEFAULT 1,
       installment_index INTEGER NOT NULL DEFAULT 1,
       installment_group_id TEXT,
+      is_recurring INTEGER NOT NULL DEFAULT 0,
+      recurrence_interval_months INTEGER NOT NULL DEFAULT 1,
       notes TEXT DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -174,7 +456,7 @@ function initDatabase(dbFilePath) {
 
     CREATE TABLE IF NOT EXISTS quote_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      portfolio_position_id INTEGER NOT NULL,
+      portfolio_position_id INTEGER,
       ticker TEXT,
       unit_price REAL NOT NULL,
       total_value REAL NOT NULL,
@@ -184,15 +466,11 @@ function initDatabase(dbFilePath) {
     );
   `);
 
-  // Normaliza dados antigos com encoding/valor legados.
-  db.prepare(`
-    UPDATE business_entries
-    SET entry_type = 'Saida'
-    WHERE entry_type <> 'Entrada' AND entry_type <> 'Saida'
-  `).run();
-
   ensureBusinessEntryColumns(db);
   ensurePersonalExpenseColumns(db);
+  ensureQuoteHistoryColumns(db);
+  ensureBusinessEntryTypeValues(db);
+  ensureRecurringRowsForCurrentMonth(db, 1);
 
   seedDatabase(db);
   return db;
@@ -217,7 +495,8 @@ function getBusinessEntries(db) {
   return db.prepare(`
     SELECT
       id, entry_date, description, entry_type, category, amount,
-      installment_total, installment_index, installment_group_id, notes
+      installment_total, installment_index, installment_group_id,
+      is_recurring, recurrence_interval_months, notes
     FROM business_entries
     ORDER BY entry_date DESC, id DESC
   `).all();
@@ -268,7 +547,8 @@ function getPersonalExpenses(db) {
   return db.prepare(`
     SELECT
       id, due_date, description, category, amount, status, paid_date,
-      installment_total, installment_index, installment_group_id, notes
+      installment_total, installment_index, installment_group_id,
+      is_recurring, recurrence_interval_months, notes
     FROM personal_expenses
     ORDER BY due_date ASC, id DESC
   `).all();
@@ -303,6 +583,182 @@ function getCdbTargets(db) {
   `).all();
 }
 
+function normalizeReferenceIsoDate(value) {
+  const parsed = parseIsoDateParts(value);
+  if (!parsed) return todayISO();
+  return `${String(parsed.year).padStart(4, "0")}-${String(parsed.month).padStart(2, "0")}-${String(parsed.day).padStart(2, "0")}`;
+}
+
+function ensureRecurringBusinessEntries(db, referenceDate = todayISO(), monthsAhead = 1) {
+  const normalizedReference = normalizeReferenceIsoDate(referenceDate);
+  const horizon = Math.max(0, Math.min(12, Math.floor(Number(monthsAhead) || 0)));
+
+  const baseRows = db.prepare(`
+    SELECT
+      id, entry_date, description, entry_type, category, amount,
+      notes, recurrence_interval_months, is_recurring
+    FROM business_entries
+    WHERE is_recurring = 1 AND installment_index = 1
+  `).all();
+
+  if (!baseRows.length) return { created: 0 };
+
+  const monthStart = startOfMonthIso(new Date(`${normalizedReference}T12:00:00`));
+  const stamp = nowISO();
+  let created = 0;
+
+  const existsStmt = db.prepare(`
+    SELECT id
+    FROM business_entries
+    WHERE
+      entry_date = @entry_date AND
+      description = @description AND
+      entry_type = @entry_type AND
+      category = @category AND
+      ABS(amount - @amount) < 0.00001 AND
+      installment_total = 1 AND
+      installment_index = 1
+    LIMIT 1
+  `);
+
+  const insertStmt = db.prepare(`
+    INSERT INTO business_entries (
+      entry_date, description, entry_type, category, amount,
+      installment_total, installment_index, installment_group_id,
+      is_recurring, recurrence_interval_months, notes, created_at, updated_at
+    ) VALUES (
+      @entry_date, @description, @entry_type, @category, @amount,
+      1, 1, NULL,
+      @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
+    )
+  `);
+
+  const run = db.transaction(() => {
+    for (const row of baseRows) {
+      const interval = normalizeRecurrenceInterval(row.recurrence_interval_months);
+      for (let monthOffset = 0; monthOffset <= horizon; monthOffset += 1) {
+        const targetMonth = addMonthsIso(monthStart, monthOffset);
+        const diff = monthDiff(row.entry_date, targetMonth);
+        if (!Number.isFinite(diff) || diff < 0) continue;
+        if (diff % interval !== 0) continue;
+
+        const scheduledDate = addMonthsIso(row.entry_date, diff);
+        const params = {
+          entry_date: scheduledDate,
+          description: row.description || "",
+          entry_type: row.entry_type || "Entrada",
+          category: row.category || "Outros",
+          amount: Number(row.amount) || 0,
+          is_recurring: 1,
+          recurrence_interval_months: interval,
+          notes: row.notes || "",
+          created_at: stamp,
+          updated_at: stamp
+        };
+
+        const exists = existsStmt.get(params);
+        if (exists) continue;
+
+        insertStmt.run(params);
+        created += 1;
+      }
+    }
+  });
+
+  run();
+  return { created };
+}
+
+function ensureRecurringPersonalExpenses(db, referenceDate = todayISO(), monthsAhead = 1) {
+  const normalizedReference = normalizeReferenceIsoDate(referenceDate);
+  const horizon = Math.max(0, Math.min(12, Math.floor(Number(monthsAhead) || 0)));
+
+  const baseRows = db.prepare(`
+    SELECT
+      id, due_date, description, category, amount,
+      notes, recurrence_interval_months, is_recurring
+    FROM personal_expenses
+    WHERE is_recurring = 1 AND installment_index = 1
+  `).all();
+
+  if (!baseRows.length) return { created: 0 };
+
+  const monthStart = startOfMonthIso(new Date(`${normalizedReference}T12:00:00`));
+  const stamp = nowISO();
+  let created = 0;
+
+  const existsStmt = db.prepare(`
+    SELECT id
+    FROM personal_expenses
+    WHERE
+      due_date = @due_date AND
+      description = @description AND
+      category = @category AND
+      ABS(amount - @amount) < 0.00001 AND
+      installment_total = 1 AND
+      installment_index = 1
+    LIMIT 1
+  `);
+
+  const insertStmt = db.prepare(`
+    INSERT INTO personal_expenses (
+      due_date, description, category, amount, status, paid_date,
+      installment_total, installment_index, installment_group_id,
+      is_recurring, recurrence_interval_months, notes, created_at, updated_at
+    ) VALUES (
+      @due_date, @description, @category, @amount, 'Pendente', NULL,
+      1, 1, NULL,
+      @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
+    )
+  `);
+
+  const run = db.transaction(() => {
+    for (const row of baseRows) {
+      const interval = normalizeRecurrenceInterval(row.recurrence_interval_months);
+      for (let monthOffset = 0; monthOffset <= horizon; monthOffset += 1) {
+        const targetMonth = addMonthsIso(monthStart, monthOffset);
+        const diff = monthDiff(row.due_date, targetMonth);
+        if (!Number.isFinite(diff) || diff < 0) continue;
+        if (diff % interval !== 0) continue;
+
+        const scheduledDate = addMonthsIso(row.due_date, diff);
+        const params = {
+          due_date: scheduledDate,
+          description: row.description || "",
+          category: row.category || "Outros",
+          amount: Number(row.amount) || 0,
+          is_recurring: 1,
+          recurrence_interval_months: interval,
+          notes: row.notes || "",
+          created_at: stamp,
+          updated_at: stamp
+        };
+
+        const exists = existsStmt.get(params);
+        if (exists) continue;
+
+        insertStmt.run(params);
+        created += 1;
+      }
+    }
+  });
+
+  run();
+  return { created };
+}
+
+function ensureRecurringRowsForCurrentMonth(db, monthsAhead = 1) {
+  const today = todayISO();
+  const business = ensureRecurringBusinessEntries(db, today, monthsAhead);
+  const personal = ensureRecurringPersonalExpenses(db, today, monthsAhead);
+
+  return {
+    businessCreated: Number(business.created || 0),
+    personalCreated: Number(personal.created || 0),
+    totalCreated: Number(business.created || 0) + Number(personal.created || 0)
+  };
+}
+
 function upsertBusinessEntry(db, row) {
   const stamp = nowISO();
   const installmentTotal = normalizeInstallmentTotal(row.installment_total);
@@ -315,12 +771,16 @@ function upsertBusinessEntry(db, row) {
     id: row.id ? Number(row.id) : null,
     entry_date: row.entry_date,
     description: row.description || "",
-    entry_type: String(row.entry_type || "").toLowerCase().startsWith("s") ? "Saida" : "Entrada",
+    entry_type: toDbBusinessEntryType(row.entry_type, db),
     category: row.category || "Outros",
     amount: Number(row.amount) || 0,
     installment_total: installmentTotal,
     installment_index: installmentIndex,
     installment_group_id: row.installment_group_id || null,
+    is_recurring: installmentTotal > 1 ? 0 : normalizeRecurringFlag(row.is_recurring),
+    recurrence_interval_months: installmentTotal > 1
+      ? 1
+      : normalizeRecurrenceInterval(row.recurrence_interval_months),
     notes: row.notes || ""
   };
 
@@ -328,7 +788,8 @@ function upsertBusinessEntry(db, row) {
     const current = db.prepare(`
       SELECT
         id, entry_date, description, entry_type, category, amount,
-        installment_total, installment_index, installment_group_id, notes
+        installment_total, installment_index, installment_group_id,
+        is_recurring, recurrence_interval_months, notes
       FROM business_entries
       WHERE id = ?
     `).get(payload.id);
@@ -356,6 +817,8 @@ function upsertBusinessEntry(db, row) {
             installment_total = @installment_total,
             installment_index = 1,
             installment_group_id = @installment_group_id,
+            is_recurring = @is_recurring,
+            recurrence_interval_months = @recurrence_interval_months,
             notes = @notes,
             updated_at = @updated_at
           WHERE id = @id
@@ -363,16 +826,20 @@ function upsertBusinessEntry(db, row) {
           ...payload,
           installment_index: 1,
           installment_group_id: groupId,
+          is_recurring: 0,
+          recurrence_interval_months: 1,
           updated_at: stamp
         });
 
         const insertStmt = db.prepare(`
           INSERT INTO business_entries (
             entry_date, description, entry_type, category, amount,
-            installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+            installment_total, installment_index, installment_group_id,
+            is_recurring, recurrence_interval_months, notes, created_at, updated_at
           ) VALUES (
             @entry_date, @description, @entry_type, @category, @amount,
-            @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+            @installment_total, @installment_index, @installment_group_id,
+            @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
           )
         `);
 
@@ -387,6 +854,8 @@ function upsertBusinessEntry(db, row) {
             installment_total: payload.installment_total,
             installment_index: index,
             installment_group_id: groupId,
+            is_recurring: 0,
+            recurrence_interval_months: 1,
             notes: payload.notes,
             created_at: stamp,
             updated_at: stamp
@@ -401,7 +870,8 @@ function upsertBusinessEntry(db, row) {
       const rows = db.prepare(`
         SELECT
           id, entry_date, description, entry_type, category, amount,
-          installment_total, installment_index, installment_group_id, notes
+          installment_total, installment_index, installment_group_id,
+          is_recurring, recurrence_interval_months, notes
         FROM business_entries
         WHERE id IN (${allIds.map(() => "?").join(",")})
         ORDER BY entry_date ASC, installment_index ASC, id ASC
@@ -427,6 +897,8 @@ function upsertBusinessEntry(db, row) {
         installment_total = @installment_total,
         installment_index = @installment_index,
         installment_group_id = @installment_group_id,
+        is_recurring = @is_recurring,
+        recurrence_interval_months = @recurrence_interval_months,
         notes = @notes,
         updated_at = @updated_at
       WHERE id = @id
@@ -437,10 +909,12 @@ function upsertBusinessEntry(db, row) {
       const insertStmt = db.prepare(`
         INSERT INTO business_entries (
           entry_date, description, entry_type, category, amount,
-          installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+          installment_total, installment_index, installment_group_id,
+          is_recurring, recurrence_interval_months, notes, created_at, updated_at
         ) VALUES (
           @entry_date, @description, @entry_type, @category, @amount,
-          @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+          @installment_total, @installment_index, @installment_group_id,
+          @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
         )
       `);
 
@@ -457,6 +931,8 @@ function upsertBusinessEntry(db, row) {
             installment_total: payload.installment_total,
             installment_index: index,
             installment_group_id: groupId,
+            is_recurring: 0,
+            recurrence_interval_months: 1,
             notes: payload.notes,
             created_at: stamp,
             updated_at: stamp
@@ -470,7 +946,8 @@ function upsertBusinessEntry(db, row) {
       const rows = db.prepare(`
         SELECT
           id, entry_date, description, entry_type, category, amount,
-          installment_total, installment_index, installment_group_id, notes
+          installment_total, installment_index, installment_group_id,
+          is_recurring, recurrence_interval_months, notes
         FROM business_entries
         WHERE id IN (${generatedIds.map(() => "?").join(",")})
         ORDER BY entry_date ASC, installment_index ASC, id ASC
@@ -488,10 +965,12 @@ function upsertBusinessEntry(db, row) {
     const inserted = db.prepare(`
       INSERT INTO business_entries (
         entry_date, description, entry_type, category, amount,
-        installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+        installment_total, installment_index, installment_group_id,
+        is_recurring, recurrence_interval_months, notes, created_at, updated_at
       ) VALUES (
         @entry_date, @description, @entry_type, @category, @amount,
-        @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+        @installment_total, @installment_index, @installment_group_id,
+        @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
       )
     `).run({
       ...payload,
@@ -505,7 +984,8 @@ function upsertBusinessEntry(db, row) {
   return db.prepare(`
     SELECT
       id, entry_date, description, entry_type, category, amount,
-      installment_total, installment_index, installment_group_id, notes
+      installment_total, installment_index, installment_group_id,
+      is_recurring, recurrence_interval_months, notes
     FROM business_entries
     WHERE id = ?
   `).get(payload.id);
@@ -572,6 +1052,10 @@ function upsertPersonalExpense(db, row) {
     installment_total: installmentTotal,
     installment_index: installmentIndex,
     installment_group_id: row.installment_group_id || null,
+    is_recurring: installmentTotal > 1 ? 0 : normalizeRecurringFlag(row.is_recurring),
+    recurrence_interval_months: installmentTotal > 1
+      ? 1
+      : normalizeRecurrenceInterval(row.recurrence_interval_months),
     notes: row.notes || ""
   };
 
@@ -579,7 +1063,8 @@ function upsertPersonalExpense(db, row) {
     const current = db.prepare(`
       SELECT
         id, due_date, description, category, amount, status, paid_date,
-        installment_total, installment_index, installment_group_id, notes
+        installment_total, installment_index, installment_group_id,
+        is_recurring, recurrence_interval_months, notes
       FROM personal_expenses
       WHERE id = ?
     `).get(payload.id);
@@ -608,6 +1093,8 @@ function upsertPersonalExpense(db, row) {
             installment_total = @installment_total,
             installment_index = 1,
             installment_group_id = @installment_group_id,
+            is_recurring = @is_recurring,
+            recurrence_interval_months = @recurrence_interval_months,
             notes = @notes,
             updated_at = @updated_at
           WHERE id = @id
@@ -615,16 +1102,20 @@ function upsertPersonalExpense(db, row) {
           ...payload,
           installment_index: 1,
           installment_group_id: groupId,
+          is_recurring: 0,
+          recurrence_interval_months: 1,
           updated_at: stamp
         });
 
         const insertStmt = db.prepare(`
           INSERT INTO personal_expenses (
             due_date, description, category, amount, status, paid_date,
-            installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+            installment_total, installment_index, installment_group_id,
+            is_recurring, recurrence_interval_months, notes, created_at, updated_at
           ) VALUES (
             @due_date, @description, @category, @amount, @status, @paid_date,
-            @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+            @installment_total, @installment_index, @installment_group_id,
+            @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
           )
         `);
 
@@ -640,6 +1131,8 @@ function upsertPersonalExpense(db, row) {
             installment_total: payload.installment_total,
             installment_index: index,
             installment_group_id: groupId,
+            is_recurring: 0,
+            recurrence_interval_months: 1,
             notes: payload.notes,
             created_at: stamp,
             updated_at: stamp
@@ -654,7 +1147,8 @@ function upsertPersonalExpense(db, row) {
       const rows = db.prepare(`
         SELECT
           id, due_date, description, category, amount, status, paid_date,
-          installment_total, installment_index, installment_group_id, notes
+          installment_total, installment_index, installment_group_id,
+          is_recurring, recurrence_interval_months, notes
         FROM personal_expenses
         WHERE id IN (${allIds.map(() => "?").join(",")})
         ORDER BY due_date ASC, installment_index ASC, id ASC
@@ -681,6 +1175,8 @@ function upsertPersonalExpense(db, row) {
         installment_total = @installment_total,
         installment_index = @installment_index,
         installment_group_id = @installment_group_id,
+        is_recurring = @is_recurring,
+        recurrence_interval_months = @recurrence_interval_months,
         notes = @notes,
         updated_at = @updated_at
       WHERE id = @id
@@ -691,10 +1187,12 @@ function upsertPersonalExpense(db, row) {
       const insertStmt = db.prepare(`
         INSERT INTO personal_expenses (
           due_date, description, category, amount, status, paid_date,
-          installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+          installment_total, installment_index, installment_group_id,
+          is_recurring, recurrence_interval_months, notes, created_at, updated_at
         ) VALUES (
           @due_date, @description, @category, @amount, @status, @paid_date,
-          @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+          @installment_total, @installment_index, @installment_group_id,
+          @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
         )
       `);
 
@@ -717,6 +1215,8 @@ function upsertPersonalExpense(db, row) {
             installment_total: payload.installment_total,
             installment_index: index,
             installment_group_id: groupId,
+            is_recurring: 0,
+            recurrence_interval_months: 1,
             notes: payload.notes,
             created_at: stamp,
             updated_at: stamp
@@ -730,7 +1230,8 @@ function upsertPersonalExpense(db, row) {
       const rows = db.prepare(`
         SELECT
           id, due_date, description, category, amount, status, paid_date,
-          installment_total, installment_index, installment_group_id, notes
+          installment_total, installment_index, installment_group_id,
+          is_recurring, recurrence_interval_months, notes
         FROM personal_expenses
         WHERE id IN (${generatedIds.map(() => "?").join(",")})
         ORDER BY due_date ASC, installment_index ASC, id ASC
@@ -750,10 +1251,12 @@ function upsertPersonalExpense(db, row) {
     const inserted = db.prepare(`
       INSERT INTO personal_expenses (
         due_date, description, category, amount, status, paid_date,
-        installment_total, installment_index, installment_group_id, notes, created_at, updated_at
+        installment_total, installment_index, installment_group_id,
+        is_recurring, recurrence_interval_months, notes, created_at, updated_at
       ) VALUES (
         @due_date, @description, @category, @amount, @status, @paid_date,
-        @installment_total, @installment_index, @installment_group_id, @notes, @created_at, @updated_at
+        @installment_total, @installment_index, @installment_group_id,
+        @is_recurring, @recurrence_interval_months, @notes, @created_at, @updated_at
       )
     `).run({
       ...payload,
@@ -767,7 +1270,8 @@ function upsertPersonalExpense(db, row) {
   return db.prepare(`
     SELECT
       id, due_date, description, category, amount, status, paid_date,
-      installment_total, installment_index, installment_group_id, notes
+      installment_total, installment_index, installment_group_id,
+      is_recurring, recurrence_interval_months, notes
     FROM personal_expenses
     WHERE id = ?
   `).get(payload.id);
@@ -776,6 +1280,7 @@ function upsertPersonalExpense(db, row) {
 function upsertPortfolioPosition(db, row) {
   const stamp = nowISO();
   const type = row.asset_type === "CDB" ? "CDB" : row.asset_type === "FII" ? "FII" : "ACAO";
+  const fallbackApplicationDate = String(row.application_date || row.updated_at || todayISO()).slice(0, 10);
 
   const payload = {
     id: row.id ? Number(row.id) : null,
@@ -787,7 +1292,7 @@ function upsertPortfolioPosition(db, row) {
     application_amount: type === "CDB" ? Number(row.application_amount) || 0 : 0,
     rate_percent: type === "CDB" ? Number(row.rate_percent) || 0 : 0,
     cdi_annual_rate: type === "CDB" ? Number(row.cdi_annual_rate) || 13.65 : 13.65,
-    application_date: type === "CDB" ? (row.application_date || todayISO()) : null,
+    application_date: fallbackApplicationDate || todayISO(),
     current_unit_price: type === "CDB" ? 0 : Number(row.current_unit_price) || 0,
     current_value: Number(row.current_value) || 0,
     last_dividend: type === "CDB" ? 0 : Number(row.last_dividend) || 0
@@ -926,5 +1431,6 @@ module.exports = {
   deleteBusinessEntry,
   deletePersonalExpense,
   deletePortfolioPosition,
-  updatePortfolioLiveValues
+  updatePortfolioLiveValues,
+  ensureRecurringRowsForCurrentMonth
 };

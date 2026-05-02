@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { app, BrowserWindow, Menu, ipcMain, Notification, shell } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const YahooFinance = require("yahoo-finance2").default;
 const {
   initDatabase,
@@ -23,12 +24,14 @@ const {
   deleteBusinessEntry,
   deletePersonalExpense,
   deletePortfolioPosition,
-  updatePortfolioLiveValues
+  updatePortfolioLiveValues,
+  ensureRecurringRowsForCurrentMonth
 } = require("./database");
 
 const POLLING_INTERVAL_MS = 3 * 60 * 1000;
 const BILL_NOTIFICATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const RECURRING_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_AUTO_BACKUPS = 300;
 const UPDATE_REPO_OWNER = process.env.FINANCA_UPDATE_OWNER || "Thiago-DD";
 const UPDATE_REPO_NAME = process.env.FINANCA_UPDATE_REPO || "Financa";
@@ -39,13 +42,18 @@ let mainWindow = null;
 let pollTimer = null;
 let billNotifyTimer = null;
 let updateTimer = null;
+let recurringSyncTimer = null;
 let backupsDirPath = "";
 let backupQueue = Promise.resolve();
 let lastUpdateTagNotified = null;
 let lastBillToastDay = "";
+let updaterBridgeReady = false;
+let updaterDownloadedReady = false;
 const notifiedBillKeys = new Set();
 
-const yahooFinance = new YahooFinance();
+const yahooFinance = new YahooFinance({
+  suppressNotices: ["yahooSurvey"]
+});
 
 function mapTickerToYahoo(symbol) {
   const normalized = String(symbol || "").toUpperCase().trim();
@@ -73,6 +81,7 @@ function formatISODate(date) {
 function dayLabel(targetIso, todayIso, tomorrowIso) {
   if (targetIso === todayIso) return "hoje";
   if (targetIso === tomorrowIso) return "amanha";
+  if (targetIso < todayIso) return `atrasada desde ${targetIso.split("-").reverse().join("/")}`;
   return `em ${targetIso.split("-").reverse().join("/")}`;
 }
 
@@ -88,7 +97,7 @@ function collectUpcomingBills(windowDays = 2) {
   plusN.setDate(now.getDate() + Number(windowDays || 2));
   const endIso = formatISODate(plusN);
 
-  const rows = getPendingExpensesDueBetween(db, todayIso, endIso);
+  const rows = getPendingExpensesDueBetween(db, "0001-01-01", endIso);
   const bills = rows.map((bill) => ({
     id: Number(bill.id),
     due_date: String(bill.due_date || ""),
@@ -132,7 +141,160 @@ function resolveReleaseDownloadUrl(release) {
   return release?.html_url || "";
 }
 
-async function checkForRepositoryUpdate() {
+function releaseTagFromVersion(version) {
+  const clean = String(version || "").trim().replace(/^v/i, "");
+  return clean ? `v${clean}` : "";
+}
+
+function releasePageUrlFromVersion(version) {
+  const tag = releaseTagFromVersion(version);
+  if (!tag) return "";
+  return `https://github.com/${UPDATE_REPO_OWNER}/${UPDATE_REPO_NAME}/releases/tag/${tag}`;
+}
+
+function releaseAssetUrlFromVersion(version) {
+  const tag = releaseTagFromVersion(version);
+  if (!tag) return "";
+  return `https://github.com/${UPDATE_REPO_OWNER}/${UPDATE_REPO_NAME}/releases/download/${tag}/${UPDATE_ASSET_NAME}`;
+}
+
+function sendUpdatePayload(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("app:updateAvailable", payload);
+  mainWindow.webContents.send("app:updateState", payload);
+}
+
+function buildUpdatePayload(info = {}, extras = {}) {
+  const version = String(extras.version || info.version || "").trim();
+  const tag = String(extras.tag || info.tag_name || releaseTagFromVersion(version)).trim();
+  const releaseUrl = String(
+    extras.releaseUrl ||
+    info.releaseUrl ||
+    info.html_url ||
+    releasePageUrlFromVersion(version)
+  ).trim();
+
+  let downloadUrl = String(extras.downloadUrl || info.downloadUrl || "").trim();
+  if (!downloadUrl) {
+    downloadUrl = resolveReleaseDownloadUrl(info);
+  }
+  if (!downloadUrl || downloadUrl === releaseUrl) {
+    downloadUrl = releaseAssetUrlFromVersion(version);
+  }
+
+  const payload = {
+    status: String(extras.status || "available"),
+    currentVersion: String(app.getVersion()),
+    version,
+    tag,
+    releaseName: String(info.releaseName || info.name || "").trim(),
+    releaseDate: String(info.releaseDate || info.published_at || "").trim(),
+    releaseNotes: info.releaseNotes || info.body || "",
+    releaseUrl,
+    downloadUrl,
+    progressPercent: Number(extras.progressPercent || 0),
+    downloaded: Boolean(extras.downloaded),
+    canAutoInstall: Boolean(extras.canAutoInstall),
+    autoUpdateEnabled: Boolean(extras.autoUpdateEnabled)
+  };
+
+  return payload;
+}
+
+function notifyUpdateAvailable(payload) {
+  const dedupeKey = String(payload?.tag || payload?.version || "").trim();
+  if (!dedupeKey) return;
+  if (lastUpdateTagNotified === dedupeKey) return;
+  lastUpdateTagNotified = dedupeKey;
+
+  if (Notification.isSupported()) {
+    new Notification({
+      title: "Atualizacao disponivel",
+      body: `Nova versao ${payload.version || dedupeKey} encontrada.`,
+      timeoutType: "default"
+    }).show();
+  }
+}
+
+function setupAutoUpdaterBridge() {
+  if (!app.isPackaged) return false;
+  if (updaterBridgeReady) return true;
+
+  updaterBridgeReady = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.allowDowngrade = false;
+
+  autoUpdater.on("checking-for-update", () => {
+    sendUpdatePayload({
+      status: "checking",
+      currentVersion: String(app.getVersion()),
+      autoUpdateEnabled: true
+    });
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    updaterDownloadedReady = false;
+    const payload = buildUpdatePayload(info, {
+      status: "available",
+      downloaded: false,
+      canAutoInstall: false,
+      autoUpdateEnabled: true
+    });
+    sendUpdatePayload(payload);
+    notifyUpdateAvailable(payload);
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    const percent = Number(progress?.percent || 0);
+    sendUpdatePayload({
+      status: "downloading",
+      currentVersion: String(app.getVersion()),
+      progressPercent: Number.isFinite(percent) ? percent : 0,
+      downloaded: false,
+      canAutoInstall: false,
+      autoUpdateEnabled: true
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    updaterDownloadedReady = true;
+    const payload = buildUpdatePayload(info, {
+      status: "downloaded",
+      downloaded: true,
+      canAutoInstall: true,
+      autoUpdateEnabled: true
+    });
+    sendUpdatePayload(payload);
+    notifyUpdateAvailable(payload);
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    updaterDownloadedReady = false;
+    sendUpdatePayload({
+      status: "not-available",
+      currentVersion: String(app.getVersion()),
+      autoUpdateEnabled: true
+    });
+  });
+
+  autoUpdater.on("error", (error) => {
+    updaterDownloadedReady = false;
+    const message = String(error?.message || error || "Erro desconhecido no updater");
+    console.error("[Updater] erro no electron-updater:", message);
+    sendUpdatePayload({
+      status: "error",
+      currentVersion: String(app.getVersion()),
+      message,
+      autoUpdateEnabled: true
+    });
+  });
+
+  return true;
+}
+
+async function checkForRepositoryUpdateFallback() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   const endpoint = `https://api.github.com/repos/${UPDATE_REPO_OWNER}/${UPDATE_REPO_NAME}/releases/latest`;
@@ -150,6 +312,11 @@ async function checkForRepositoryUpdate() {
     const response = await fetch(endpoint, { headers, cache: "no-store" });
 
     if (response.status === 404) {
+      sendUpdatePayload({
+        status: "not-available",
+        currentVersion: String(app.getVersion()),
+        autoUpdateEnabled: false
+      });
       return;
     }
 
@@ -165,32 +332,51 @@ async function checkForRepositoryUpdate() {
     const currentVersion = app.getVersion();
     const isNewer = compareSemver(latestVersion, currentVersion) > 0;
 
-    if (!isNewer) return;
-
-    if (lastUpdateTagNotified === latestTag) return;
-    lastUpdateTagNotified = latestTag;
-
-    const payload = {
-      tag: latestTag,
-      version: latestVersion,
-      currentVersion,
-      releaseUrl: release?.html_url || "",
-      downloadUrl: resolveReleaseDownloadUrl(release)
-    };
-
-    mainWindow.webContents.send("app:updateAvailable", payload);
-
-    if (Notification.isSupported()) {
-      new Notification({
-        title: "Atualizacao disponivel",
-        body: `Nova versao ${latestVersion} encontrada. Abra o app para atualizar.`,
-        timeoutType: "default"
-      }).show();
+    if (!isNewer) {
+      sendUpdatePayload({
+        status: "not-available",
+        currentVersion,
+        autoUpdateEnabled: false
+      });
+      return;
     }
 
+    const payload = buildUpdatePayload(release, {
+      status: "available",
+      version: latestVersion,
+      tag: latestTag,
+      releaseUrl: release?.html_url || "",
+      downloadUrl: resolveReleaseDownloadUrl(release),
+      downloaded: false,
+      canAutoInstall: false,
+      autoUpdateEnabled: false
+    });
+    sendUpdatePayload(payload);
+    notifyUpdateAvailable(payload);
   } catch (error) {
-    console.error("[Updater] erro ao verificar atualizacao:", error.message);
+    console.error("[Updater] erro ao verificar atualizacao (fallback):", error.message);
+    sendUpdatePayload({
+      status: "error",
+      currentVersion: String(app.getVersion()),
+      message: String(error?.message || error),
+      autoUpdateEnabled: false
+    });
   }
+}
+
+async function checkForRepositoryUpdate() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  if (setupAutoUpdaterBridge()) {
+    try {
+      await autoUpdater.checkForUpdates();
+      return;
+    } catch (error) {
+      console.error("[Updater] falha no electron-updater, usando fallback:", error.message);
+    }
+  }
+
+  await checkForRepositoryUpdateFallback();
 }
 
 function startUpdateScheduler() {
@@ -205,6 +391,19 @@ function startUpdateScheduler() {
       console.error("[Updater interval] erro:", error.message);
     });
   }, UPDATE_CHECK_INTERVAL_MS);
+}
+
+function installDownloadedUpdateNow() {
+  if (!setupAutoUpdaterBridge()) return false;
+  if (!updaterDownloadedReady) return false;
+
+  try {
+    autoUpdater.quitAndInstall();
+    return true;
+  } catch (error) {
+    console.error("[Updater] falha ao instalar update baixado:", error.message);
+    return false;
+  }
 }
 
 function safeBackupReason(reason) {
@@ -455,6 +654,33 @@ function startBillNotificationScheduler() {
   }, BILL_NOTIFICATION_INTERVAL_MS);
 }
 
+function syncRecurringRowsAndNotify() {
+  if (!db) return { totalCreated: 0 };
+
+  const summary = ensureRecurringRowsForCurrentMonth(db, 1);
+  if (Number(summary.totalCreated || 0) > 0) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("app:recurringRowsGenerated", summary);
+    }
+    notifyUpcomingBills();
+  }
+
+  return summary;
+}
+
+function startRecurringScheduler() {
+  if (recurringSyncTimer) clearInterval(recurringSyncTimer);
+
+  syncRecurringRowsAndNotify();
+  recurringSyncTimer = setInterval(() => {
+    try {
+      syncRecurringRowsAndNotify();
+    } catch (error) {
+      console.error("[Recurring] falha ao sincronizar recorrencias:", error.message);
+    }
+  }, RECURRING_SYNC_INTERVAL_MS);
+}
+
 function registerIpcHandlers() {
   const getGoal = () => {
     const raw = getUserSetting(db, "meta_patrimonio", "100000");
@@ -462,23 +688,32 @@ function registerIpcHandlers() {
     return Number.isFinite(value) && value > 0 ? value : 100000;
   };
 
-  ipcMain.handle("app:getInitialData", () => ({
-    businessEntries: getBusinessEntries(db),
-    personalIncomes: getPersonalIncomes(db),
-    personalExpenses: getPersonalExpenses(db),
-    portfolioPositions: getPortfolioPositions(db),
-    userSettings: getUserSettings(db),
-    billAlerts: collectUpcomingBills(2),
-    meta: {
-      pollingIntervalMs: POLLING_INTERVAL_MS,
-      portfolioGoal: getGoal(),
-      dbPath: db.name,
-      backupsPath: backupsDirPath
+  ipcMain.handle("app:getInitialData", () => {
+    try {
+      syncRecurringRowsAndNotify();
+    } catch (error) {
+      console.error("[Recurring] falha antes de montar dados iniciais:", error.message);
     }
-  }));
+
+    return {
+      businessEntries: getBusinessEntries(db),
+      personalIncomes: getPersonalIncomes(db),
+      personalExpenses: getPersonalExpenses(db),
+      portfolioPositions: getPortfolioPositions(db),
+      userSettings: getUserSettings(db),
+      billAlerts: collectUpcomingBills(2),
+      meta: {
+        pollingIntervalMs: POLLING_INTERVAL_MS,
+        portfolioGoal: getGoal(),
+        dbPath: db.name,
+        backupsPath: backupsDirPath
+      }
+    };
+  });
 
   ipcMain.handle("db:upsertBusinessEntry", async (_event, row) => {
     const saved = upsertBusinessEntry(db, row);
+    syncRecurringRowsAndNotify();
     await queueAutoBackupSafe("business-entry");
     return saved;
   });
@@ -497,6 +732,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle("db:upsertPersonalExpense", async (_event, row) => {
     const saved = upsertPersonalExpense(db, row);
+    syncRecurringRowsAndNotify();
     await queueAutoBackupSafe("personal-expense");
     notifyUpcomingBills();
     return saved;
@@ -535,7 +771,15 @@ function registerIpcHandlers() {
 
   ipcMain.handle("app:checkForUpdatesNow", async () => {
     await checkForRepositoryUpdate();
-    return { ok: true };
+    return {
+      ok: true,
+      autoUpdateEnabled: Boolean(app.isPackaged)
+    };
+  });
+
+  ipcMain.handle("app:installDownloadedUpdateNow", async () => {
+    const ok = installDownloadedUpdateNow();
+    return { ok };
   });
 
   ipcMain.handle("app:getBillAlerts", () => notifyUpcomingBills());
@@ -576,6 +820,7 @@ app.whenReady()
     createMainWindow();
     startPolling();
     startBillNotificationScheduler();
+    startRecurringScheduler();
     startUpdateScheduler();
 
     app.on("activate", () => {
@@ -595,6 +840,7 @@ app.on("before-quit", () => {
   if (pollTimer) clearInterval(pollTimer);
   if (billNotifyTimer) clearInterval(billNotifyTimer);
   if (updateTimer) clearInterval(updateTimer);
+  if (recurringSyncTimer) clearInterval(recurringSyncTimer);
   if (db) db.close();
 });
 
